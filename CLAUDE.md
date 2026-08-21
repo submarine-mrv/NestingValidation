@@ -19,8 +19,8 @@ parent product. Currently: `salish_sea/` (Salish Sea / Juan de Fuca, GLORYS-forc
   No git pin — do not reinstate a `[sources]` entry for Oceananigans.
 - A transient `signal 11` segfault on the first `using NumericalEarth` just needs a retry.
 - `CopernicusMarine.jl`'s bundled binary does not run on this macOS (13.2); a pip-venv shim is
-  installed at the package's scratch path. See `docs/`.
-- Long runs: ~12 s/iter at 250x177x36 on CPU, roughly 1.6 h per simulated day.
+  installed at the package's scratch path — see `docs/environment.md`, which also covers the data
+  caches, the GLORYS download gotchas, and run cost.
 
 ## Docs
 
@@ -28,3 +28,4 @@ parent product. Currently: `salish_sea/` (Salish Sea / Juan de Fuca, GLORYS-forc
   wiring that works, the traps, the net-transport correction, the diagnostics worth having.
 - `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
   why the domain boundaries sit where they do, and known limitations.
+- `docs/environment.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, run cost.
