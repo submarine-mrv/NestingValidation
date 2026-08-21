@@ -1,0 +1,10 @@
+# Model output — regenerable, and far too large for git (~330 MB and growing).
+# Keep these locally; back them up outside the repo if a particular run matters.
+*.jld2
+*.mp4
+
+# Figures are small and serve as documentation, so they are tracked.
+# (salish_sea/*.png, ~1.6 MB)
+
+.DS_Store
+*.swp
