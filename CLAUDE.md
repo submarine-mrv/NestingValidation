@@ -26,3 +26,5 @@ parent product. Currently: `salish_sea/` (Salish Sea / Juan de Fuca, GLORYS-forc
 
 - `docs/obc-implementation-recipe.md` — portable recipe for parent-driven open boundaries: the BC
   wiring that works, the traps, the net-transport correction, the diagnostics worth having.
+- `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
+  why the domain boundaries sit where they do, and known limitations.
