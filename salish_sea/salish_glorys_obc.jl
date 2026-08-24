@@ -51,8 +51,11 @@ z_reference = ExponentialDiscretization(Nz, -depth, 0; scale = z_scale)
 # `vertical_coordinate`, so the model takes `default_vertical_coordinate(grid)`, which returns
 # ZStarCoordinate() iff grid.z is mutable (and ZCoordinate() otherwise). Asking for ZStar on a
 # static grid throws.
-# Needed for tides: Salish Sea tidal range is 3-5 m and the surface cell is 2.3 m, so a static
-# z-grid cannot represent a free surface that exceeds its top cell. Off by default until validated
+# A static grid here is a LINEAR free surface: thicknesses are fixed and η never changes them, so it
+# does not fail when η is large -- the cost is an O(max|η| / Δz_top) error in surface tracer
+# concentration and in the depth over which surface fluxes are spread. At Δz_top = 2.3 m with η of
+# 0.2-0.5 m that ratio is 0.09-0.22, which is why static z is fine here. Tides (3-5 m) or a thinner
+# surface cell would change that. See docs/salish_sea_notes.md. Off by default until validated
 # against the stable static-z baseline.
 #   SALISH_ZSTAR=1 julia --project=. salish_glorys_obc.jl
 use_zstar = get(ENV, "SALISH_ZSTAR", "0") == "1"

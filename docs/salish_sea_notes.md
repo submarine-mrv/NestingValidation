@@ -110,15 +110,38 @@ the discharge.
 ## Next steps
 
 1. **Tides (TPXO/FES).** The Flather BC already takes the right form — `η_ext += Σ A cos(ωt−φ)`,
-   `U_ext += Σ U cos(...)` — so the boundary machinery needs no change. But five things cascade: z\*
-   becomes mandatory (3–5 m range vs a 2.3 m surface cell), Δt drops ~3.7×, the nudging would damp
-   the tides, the transport correction must become tidally averaged, and the exchange diagnostic
-   needs TEF or tidal averaging. Data needs a licence request (OSU for TPXO, AVISO for FES).
+   `U_ext += Σ U cos(...)` — so the boundary machinery needs no change. But four things cascade:
+   Δt drops ~3.7×, the nudging would damp the tides, the transport correction must become tidally
+   averaged, and the exchange diagnostic needs TEF or tidal averaging. Data needs a licence request
+   (OSU for TPXO, AVISO for FES). See the vertical-coordinate note below for z\*.
 2. **Back to LiveOcean** for boundary and initial conditions — hourly output is available but
    expensive for extended runs. This is what SalishSeaCast does for its own JdF boundary.
 3. **z\*** is implemented behind `SALISH_ZSTAR=1` and mechanically works (~6% overhead), but was
    validated against the older Oceananigans and shows a small unexplained S divergence over an hour.
    Re-check before relying on it.
+
+## Vertical coordinate: when z\* is worth it
+
+Correcting an earlier claim in these notes: a static grid in Oceananigans is a **linear free
+surface** — cell thicknesses are fixed and η never changes them (`reconcile_vertical_coordinate!`
+is a no-op for `ZCoordinate`, `∂t_σ = 0`). It does **not** fail when η exceeds the top cell, and
+there is no vanishing-cell instability. The cost is accuracy, not viability.
+
+The quantity that decides it is **max|η| / Δz_top**, because with fixed volumes the surface tracer
+concentration is wrong by O(η/Δz_top) — a rising free surface should dilute the surface layer and
+does not — and surface fluxes are spread over Δz_top rather than the true Δz_top + η. Below ~0.1 the
+error is negligible; 0.1–0.3 is a modest bias; above ~0.5 the surface budget is materially wrong;
+above 1 it is meaningless at the surface, though it still runs.
+
+So **thin surface cells select z\*, not tides**. Tides are just the extreme case: η of 0.3–0.5 m is
+routine from steric, mesoscale and boundary-imposed signal alone. The Salish configuration runs
+static z at Δz_top = 2.3 m with η of 0.2–0.5 m, a ratio of 0.09–0.22, which is fine. A ~1 m surface
+cell anywhere would not be.
+
+Two supporting signals: `default_vertical_coordinate` returns `ZStarCoordinate` whenever the grid is
+mutable, and NumericalEarth's `FreshwaterExchange` exists specifically to cancel the z\* ambient-carry
+term for surface tracer fluxes — the ecosystem treats z\* as the expected mode for realistic surface
+forcing, with static z as the fallback.
 
 ## Reference models
 

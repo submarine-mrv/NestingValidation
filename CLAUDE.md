@@ -1,7 +1,10 @@
 # nesting_implementation
 
 Regional ocean configurations in Oceananigans, testing open boundary conditions driven by a
-parent product. Currently: `salish_sea/` (Salish Sea / Juan de Fuca, GLORYS-forced).
+parent product.
+
+- `salish_sea/` — Salish Sea / Juan de Fuca, GLORYS-forced. Validated: stable 7-day run at 0.74 km.
+- `red_sea/` — Red Sea + Gulf of Aden, GLORYS-forced. Written and smoke-tested; not yet validated.
 
 ## Working agreements
 
@@ -29,3 +32,4 @@ parent product. Currently: `salish_sea/` (Salish Sea / Juan de Fuca, GLORYS-forc
 - `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
   why the domain boundaries sit where they do, and known limitations.
 - `docs/environment.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, run cost.
+- `red_sea/README.md` — that domain's verified geometry, the GLORYS depth check, and what is untested.
