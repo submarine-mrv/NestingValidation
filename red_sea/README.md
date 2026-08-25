@@ -1,7 +1,7 @@
 # Red Sea + Gulf of Aden configuration
 
-Second OBC test domain, adapted from `salish_sea/`. **Status: written and smoke-tested at coarse
-resolution; not yet validated.** Model: `redsea_glorys_obc.jl`.
+Second OBC test domain, adapted from `salish_sea/`. **Status: validated — stable 7-day run at 0.05°
+(5.2 km).** Model: `redsea_glorys_obc.jl`.
 
 ## Why this domain
 
@@ -34,7 +34,7 @@ and in water GLORYS resolves.
 
 Suez and Aqaba terminate naturally inside the domain, so no artificial closure is needed.
 
-## GLORYS validity — the check that mattered
+## GLORYS validity at the boundary
 
 The Salish Sea instability came from GLORYS having no valid data below 320 m there while the
 bathymetry reached 353 m. Same check here, over a box straddling the boundary (49–51°E, 10.5–16°N):
@@ -51,14 +51,101 @@ parent supplies the right water masses at the boundary, not merely numbers.
 **Consequence: `depth` must stay ≤ ~3200 m.** Rounding it up would put model cells below the parent's
 valid data and recreate the Salish failure exactly.
 
+That 50 m is a **boundary-box number and does not generalise** — the interior is a different and much
+worse story. See the next section.
+
+## GLORYS validity in the interior
+
+`glorys_interior_check.jl` — read-only, ~65 s at 0.05°, runs offline off the GLORYS cache. Builds the
+same grid and bathymetry as the model, then asks three questions in increasing order of what actually
+matters. `REDSEA_DELTA` / `REDSEA_PASSES` as for the model; `REDSEA_CHECK_CONTROL=1` adds the
+`fill_down!` control in stage 3.
+
+Numbers below are at **0.05°** (23,194 wet columns, 497,165 wet cells, 1993-01-01).
+
+### 1. Coverage — where does the parent run out of water?
+
+Per column, against the deepest GLORYS level with valid data at the *nearest* parent column:
+
+| | |
+|---|---|
+| wet columns whose floor is below the parent's deepest water | **51.7%** |
+| wet columns below the parent's deepest valid cell *centre* | 69.8% |
+| wet **cells** below the parent's deepest valid centre | 31,724 of 497,165 (**6.4%**) — Red Sea 8.3%, Gulf of Aden 3.1% |
+| face-margin quantiles | median −3 m, 5% −298 m, 1% −566 m, min −1254 m |
+| wet columns whose nearest parent column is **entirely land** | 592 (2.55%) |
+
+GLORYS's Red Sea is simply shallower than ETOPO's. The deficit is not scattered: it is a band along
+the coastline and the axial trough (panel 1 of the figure). The entirely-dry columns include several
+**at Bab el-Mandeb itself** (43.07–43.43°E, 12.6–13.6°N) — the parent has land where the model has
+the strait the domain exists to resolve. That does not touch the boundary condition, which is at 50°E
+in deep water, and the strait is far outside the sponge, so it reaches the model only through the IC.
+
+### 2. Provenance — what does the pipeline put there?
+
+Nothing non-physical. Over wet cells the IC is `T ∈ [2.008, 28.203]`, `S ∈ [34.778, 41.909]`, and **no
+wet cell has S < 30 or a zero** — none of the parent's zero-filled deep levels reach the model grid.
+Water masses are right, and are not mixed across the sill:
+
+| | S (median) | T (median) |
+|---|---|---|
+| Red Sea deep (λ<43.4, φ>15°N, z<−300 m), n=36,454 | **40.406** | **21.168** |
+| Gulf of Aden deep (λ>45°E, z<−300 m), n=39,189 | 35.761 | 12.619 |
+
+Those are Red Sea Deep Water and Gulf of Aden water respectively, which is the correct answer. 1.6% of
+deep Red Sea cells fall outside the RSDW envelope, clustered at 36.1–36.2°E / 25.3–25.4°N near 1900 m
+at S ≈ 38.74, T ≈ 13.55 — and the freshest of them comes **from parent data, not from extrapolation**,
+so that is GLORYS's own northern deep water, not something this configuration did.
+
+### 3. Static stability — the defect that actually killed the Salish Sea
+
+Value ranges were never the Salish failure; a **density inversion** was. Testing for it directly
+(TEOS-10 on adjacent wet cells at their shared interface depth):
+
+- **10,558 unstable pairs of 473,971 (2.23%)**, but almost all trivial.
+- The tail, Δρ ≥ 0.1 kg/m³: **700 pairs (0.148%)**, **all of them in the Red Sea**, 674 of them above
+  the Hanish sill, median depth of the lower cell **20 m**, and 85% involving a cell below the
+  parent's deepest valid centre.
+- Worst is **+0.92 kg/m³**, against roughly **10 kg/m³** for the Salish Sea inversion (14 psu of fresh
+  water under salty). An order of magnitude weaker, and shallow rather than in a deep basin.
+
+The mechanism is **horizontal**, not vertical: `NearestNeighborInpainting(100)` fills coastal columns
+where GLORYS has no data by reaching sideways, and in this basin that imports the far northern
+hypersaline water (S up to 41.909) and lands it on top of ordinary Red Sea water at S ≈ 40.47.
+
+**`fill_down!` is insurance here, not load-bearing.** With it disabled the check is *identical* —
+same 10,558 pairs, same worst Δρ, same wet-cell S range. It repairs ~630k native cells, but all of
+them are below −3226 m or in columns the model never samples. Keep it (it costs nothing and the next
+domain may need it), but do not mistake it for the defence against what stage 3 found: a vertical
+repair cannot fix a horizontal import.
+
+### Verdict
+
+The interior is **usable but not clean**. Nothing here reproduces the Salish Sea failure — no zeros,
+no wrong water masses, no deep-basin inversion — and the interior is not nudged (the sponge is a
+0.5° Gaussian on the east edge, ~7° from the strait, so the mask is zero everywhere that matters), so
+nothing forces the extrapolated cells. The residual risk is 700 shallow coastal inversions of up to
+1 kg/m³, in the top 20 m where the convective closure acts fastest.
+
+That is a bounded risk a validation run resolves rather than a blocker. Watch 40.7–40.9°E / 18.4–18.5°N
+(S = 41.9 over S = 40.5 at 153 m) and 36.9–37.0°E / 25.4–25.5°N (cold over warm at 6–9 m). If it does
+bite, the remedy is horizontal — restrict the inpainting reach, or sort each IC column for stability —
+not more `fill_down!`.
+
+![interior check](redsea_glorys_interior_check.png)
+
 ## Resolution and cost (CPU)
 
 | Δ | km at 20°N | columns | 7-day run |
 |---|---|---|---|
-| 0.05° | 5.23 | 144,000 | ~28 h |
+| 0.05° | 5.23 | 144,000 | **17.5 h** (measured) |
 | 0.025° | 2.62 | 576,000 | **~8–9 days** |
 
 2.5 km is the right target but needs GPU or HPC. Develop at 0.05° (`REDSEA_DELTA`).
+
+The 0.05° figure is measured, not estimated: 1890 iterations at 32.3 s/iter. It beats the original
+~28 h estimate because Δt settles at **9.6 min**, not the ~3.5 min assumed from Salish Sea scaling —
+the cells are 7× larger. The 0.025° row is still an estimate and should be scaled from 32.3 s/iter.
 
 ## Vertical grid
 
@@ -89,25 +176,100 @@ raise `z_scale` to ~600 for a 2.8 m cell.
   yet — the boundary ΔS came out at 0.03 psu. The Bab el-Mandeb section is the number to compare
   with observations (~0.3–0.4 Sv each way).
 
+## Validation — 7-day run at 0.05°
+
+`REDSEA_DELTA=0.05`, z\* on, WENO(7), 1993-01-01 + 7 days. 1890 iterations, 17.5 h wall, Δt settling
+at 9.6 min. Log parsed and plotted by `plot_validation.jl`.
+
+### Conservation — the z\* question
+
+This was the sharpest untested item: z\* had never run on Oceananigans 0.110.17 / NumericalEarth
+0.6.1, and showed a small unexplained salinity drift in the Salish hour-test against the older
+version. It does not drift here.
+
+| | |
+|---|---|
+| mean S | 37.5030 → **37.5028**, whole-run range 37.5028–37.5042 |
+| salt drift (relative) | max \|5.5e−5\|, ends at +9.9e−6 |
+| volume drift (relative) | max \|8.4e−5\|, ends at +1.5e−5 |
+| implied sea-level change | **≈ 1.7 cm over 7 days** |
+| S vs parent range | final max 41.420 against GLORYS 42.111 — **0.69 below**, no overshoot |
+
+The mean-salinity excursion is 1.4e−3 psu (3.7e−5 relative) and is **not monotonic** — it rises to
+37.5042 by day 3 and returns to its starting value by day 7. That is an oscillation, not a drift.
+Salt and volume track each other throughout (top-left panel of the figure), which is what conserving
+concentration under a moving grid looks like: the volume moves with η and the salt moves with it.
+
+**Measuring this at all required fixing the baseline.** Taking it at setup books the one-time σ
+reconciliation against the initial η as a +3.7e−4 volume jump — an order of magnitude larger than the
+drift being looked for, and easily misread as z\* failing. `update_state!` does not reconcile it;
+only the first `time_step!` does. The baseline is therefore taken on the first progress call.
+
+### Stability
+
+`max|η|` peaks at **3.105 m at t = 0.015 d**, then decays to a steady **0.372–0.393 m** for the last
+six days — back to the scale of the GLORYS `zos` it started from (0.405 m).
+
+That transient is geostrophic adjustment, not a boundary fault: the IC sets T, S and η but never u or
+v, so a 0.4 m sea-surface field is released with zero flow and has to slosh. It looks alarming while
+it is happening — η growing monotonically with `max|u|` and `max|w|` pinned on the boundary column —
+but **η returning to forcing scale is positive evidence the east boundary radiates rather than
+reflects**, which a reflecting boundary could not produce. `max|u|` settles near 0.84 m/s, which is
+still high for this basin and is not yet explained.
+
+### The IC density inversions
+
+*Interior*-check finding, tested in anger. They decay and do not bite:
+
+| | IC | peak | final |
+|---|---|---|---|
+| unstable pairs | 10,558 | 13,394 (t = 0.012 d) | **7,325** |
+| worst Δρ (kg/m³) | 0.920 | 0.920 | **0.442** |
+
+Count and amplitude both roughly halve. They rise first — during the adjustment transient, which
+stirs faster than the closure mixes — which is why an early sample reads as growth. They do **not**
+reach zero: ~7,300 pairs persist at half amplitude, a stirring-against-mixing balance rather than a
+residue of the IC. Surface `Smax` erodes 41.909 → 41.420 over the run, consistent with the hypersaline
+cell at 153 m being mixed down. No runaway, and the excursion diagnostic never leaves the parent range.
+
+### Bab el-Mandeb
+
+| | final day (mean) | literature |
+|---|---|---|
+| Qin (into the Red Sea) | +4.9e4 m³/s | ~0.3–0.4 Sv |
+| Qout | −1.8e5 m³/s | ~0.3–0.4 Sv |
+| ΔS = Sin − Sout | **−1.00** (range −1.14 to −0.80) | negative (inverse estuary) |
+
+The sign is right and stronger than the smoke test's −0.3, and the outflow is within a factor of two
+of observations — for a strait the parent cannot resolve at all, driven only through a boundary 7°
+away. The inflow is ~7× low and the exchange is strongly asymmetric (net outflow ~1.3e5 m³/s).
+
+**That asymmetry is the missing surface forcing, not a boundary failure.** Evaporation is what pulls
+the compensating inflow through the strait; without it the initial hypersaline basin simply drains
+over the sill as a lock-exchange. It amounts to 0.03% of Red Sea volume over 7 days, so it is
+harmless on this window, but the configuration is *not* in steady state and its strait transports
+should not be quoted as a hindcast.
+
+![validation](redsea_validation_7day.png)
+
 ## Status and what is untested
 
-Smoke tests at 0.1–0.2° run clean end to end: BCs, transport correction, diagnostics, output writers,
-and z\* all engage without error. The IC is faithful (`T ∈ [2.012, 28.203]`, `S ∈ [34.779, 41.869]`,
-inside the parent range) and the strait diagnostic gives **ΔS ≈ −0.3**, correctly negative for an
-inverse estuary — fresher in at the surface, saltier out at depth.
+The 7-day run at 0.05° is stable and conserves (see *Validation*). Still not established:
 
-Not yet established:
-
-- **No validation run.** Coarse smoke tests only. Strait transports are ~20× below literature, but at
-  11 km the strait is 8 badly-resolved cells and the runs are 0.02 days from rest, so that number
-  means nothing yet.
-- **z\* is unexercised on the upgraded packages** (Oceananigans 0.110.17 / NumericalEarth 0.6.1) and
-  showed a small unexplained salinity drift in the Salish hour-test against the older version.
+- ~~No validation run.~~ **Done** — 7 days at 0.05°, stable, 17.5 h wall.
+- ~~z\* is unexercised on the upgraded packages.~~ **Done** — no drift; mean S returns to its starting
+  value after a 1.4e−3 psu excursion. A **static-z control was not run** (it would double the wall
+  time), so this shows z\* is well behaved, not that it beats static z here.
 - **No surface forcing.** The Red Sea is evaporation-driven; without it the interior will not develop
   a realistic overturning. Fine for a boundary test, not for physics.
-- **GLORYS validity was checked in the boundary box only.** The Red Sea interior deserves the same
-  check — in the Salish Sea it was the interior nudging, not the boundary, that did the damage.
+- ~~GLORYS validity was checked in the boundary box only.~~ **Done** — see *GLORYS validity in the
+  interior*. Result: no Salish-style failure, but 700 shallow coastal density inversions of up to
+  0.92 kg/m³ that a validation run needs to be watched for.
 - **Seasonal timescales.** Meaningful Red Sea circulation runs are months; days to weeks suffices for
   boundary testing.
+- **`max|u| ≈ 0.84 m/s` in steady state is unexplained** and higher than this basin should carry.
+  Domain-wide maximum, so it may be a single boundary or strait cell; not yet localised over time.
+- **Residual static instability.** ~7,300 unstable pairs persist at Δρ ≤ 0.44 kg/m³ rather than
+  decaying to zero. Harmless over 7 days; unknown whether it matters on seasonal timescales.
 
 ![candidate domain](redsea_candidate_domain.png)

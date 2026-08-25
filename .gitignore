@@ -8,3 +8,6 @@
 
 .DS_Store
 *.swp
+
+# Run logs — regenerable; findings are distilled into README/docs instead.
+*.log

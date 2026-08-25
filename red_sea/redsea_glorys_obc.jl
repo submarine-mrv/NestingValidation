@@ -19,6 +19,7 @@ using Dates
 using Printf
 
 const DW = NumericalEarth.DataWrangling
+const SWP = Oceananigans.BuoyancyFormulations.SeawaterPolynomials
 
 arch = CPU()
 
@@ -106,7 +107,7 @@ glorys = DW.GLORYSDaily()
 using Oceananigans.BoundaryConditions: NormalRadiation,
                                        GravityWaveRadiationBoundaryCondition,
                                        SurfaceWaveRadiationBoundaryCondition
-using Oceananigans.Operators: Δzᶜᶜᶜ, Δzᶠᶜᶜ, Axᶠᶜᶜ, Ayᶜᶠᶜ, Azᶜᶜᶜ
+using Oceananigans.Operators: Δzᶜᶜᶜ, Δzᶠᶜᶜ, Axᶠᶜᶜ, Ayᶜᶠᶜ, Azᶜᶜᶜ, Vᶜᶜᶜ
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node, immersed_peripheral_node
 using Oceananigans.Units: Time
 
@@ -131,8 +132,13 @@ bc_inpainting = DW.NearestNeighborInpainting(100)
 
 # Repair parent levels with no valid data (they come back zero-filled, and interpolation then blends
 # a valid value with zero to give anything in between -- an absolute floor cannot catch that).
-# GLORYS is valid to 3226 m here against a 3176 m domain, so this should be a no-op; the printed
-# range below is the check that it is.
+#
+# In THIS domain it is insurance, not load-bearing: glorys_interior_check.jl re-ran the whole IC with
+# fill_down! disabled and got a bit-identical model state. It does repair ~630k native cells, but all
+# of them lie below -3226 m or in columns the model never samples, which is why zeros survive in the
+# printed range below and are still harmless. Keep it -- the next domain may need it, and the Salish
+# Sea did. But the real interior risk here is HORIZONTAL: inpainting reaches up to 100 cells sideways
+# and imports the wrong water mass. A vertical repair cannot fix that. See red_sea/README.md.
 function fill_down!(a::AbstractArray{<:Any,3}, floor_value)
     nx, ny, nz = size(a)
     @inbounds for j in 1:ny, i in 1:nx
@@ -164,9 +170,12 @@ v_restoring = DW.DatasetRestoring(restoring_meta(:v_velocity),  arch; restoring_
 # Red Sea S runs 35-41 (hypersaline in the north), T 21-31 -- floors well below anything physical.
 fill_down_fts!(T_restoring.field_time_series, 1.0)
 fill_down_fts!(S_restoring.field_time_series, 5.0)
-@info @sprintf("GLORYS native after fill_down: T ∈ [%.3f, %.3f], S ∈ [%.3f, %.3f]",
-               minimum(interior(T_restoring.field_time_series[1])), maximum(interior(T_restoring.field_time_series[1])),
-               minimum(interior(S_restoring.field_time_series[1])), maximum(interior(S_restoring.field_time_series[1])))
+# Zeros here are expected (see above) -- what matters is that none reach a wet model cell, which the
+# "Initial condition (wet)" line below reports.
+let Ti = interior(T_restoring.field_time_series[1]), Si = interior(S_restoring.field_time_series[1])
+    @info @sprintf("GLORYS native after fill_down: T ∈ [%.3f, %.3f], S ∈ [%.3f, %.3f] | residual zeros %.2f%% (below -3226 m, unsampled)",
+                   minimum(Ti), maximum(Ti), minimum(Si), maximum(Si), 100count(==(0), Si) / length(Si))
+end
 
 T_fts, T_native = T_restoring.field_time_series, T_restoring.native_grid
 S_fts, S_native = S_restoring.field_time_series, S_restoring.native_grid
@@ -382,6 +391,60 @@ S_ic_range = let (lo,_,hi,_) = wet_extrema(ocean.model.tracers.S); (lo,hi) end
 @info @sprintf("Initial condition (wet):    T ∈ [%.3f, %.3f] | S ∈ [%.3f, %.3f]",
                T_ic_range[1], T_ic_range[2], S_ic_range[1], S_ic_range[2])
 
+# --- Conservation and stability monitors -------------------------------------
+# An INTEGRATED metric, because min/max S cannot see a slow drift. Volume is the other half of the
+# same question: under ZStar the thicknesses move with η, so wet volume should track the net boundary
+# transport and nothing else. This is what cleared z* on these package versions -- over 7 days mean S
+# went 37.5030 -> 37.5028 with a non-monotonic 1.4e-3 psu excursion, and salt tracked volume
+# throughout, i.e. concentration conserved under the moving grid. See red_sea/README.md.
+function salt_and_volume(model)
+    S = model.tracers.S
+    V = 0.0; SV = 0.0
+    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
+        v = Vᶜᶜᶜ(i, j, k, grid)
+        V += v; SV += v * S[i, j, k]
+    end
+    return SV, V
+end
+
+# Static stability. glorys_interior_check.jl found 10558 unstable pairs in the IC, worst 0.92 kg/m³,
+# shallow and coastal, from horizontal inpainting rather than from fill_down!. Over the 7-day run they
+# RISE first (to 13394 during the adjustment transient, which stirs faster than the closure mixes)
+# and then decay to 7325 at worst 0.44 -- so an early sample reads as growth. They do not reach zero:
+# ~7300 persist as a stirring-against-mixing balance. Reference pressure is the cell midpoint from the
+# rest-state grid; σ departs from 1 by O(1e-3), far below what this comparison resolves.
+const eos = SWP.TEOS10.TEOS10EquationOfState()
+
+function static_instability(model)
+    T, S = model.tracers.T, model.tracers.S
+    n = 0; worst = 0.0
+    @inbounds for j in 1:Ny, i in 1:Nx, k in 1:(Nz-1)
+        (wetcell(i, j, k,   grid, Center(), Center(), Center()) &&
+         wetcell(i, j, k+1, grid, Center(), Center(), Center())) || continue
+        zr = 0.5 * (z_centers[k] + z_centers[k+1])
+        Δρ = SWP.ρ(T[i, j, k+1], S[i, j, k+1], zr, eos) - SWP.ρ(T[i, j, k], S[i, j, k], zr, eos)
+        if Δρ > 1e-4
+            n += 1
+            worst = max(worst, Δρ)
+        end
+    end
+    return n, worst
+end
+
+# The drift baseline is taken on the FIRST PROGRESS CALL, not here. Under z* the grid still carries
+# σ = 1 at this point while η already holds ~0.4 m of GLORYS zos; σ is reconciled inside the first
+# time_step! (update_state! does not do it). Baselining at rest therefore books that one-time
+# reconciliation as a +3.7e-4 volume jump, which is the same size as the drift being looked for.
+const salt₀ = Ref(0.0)
+const vol₀  = Ref(0.0)
+
+let (SV, V) = salt_and_volume(ocean.model)
+    n, w = static_instability(ocean.model)
+    @info @sprintf("At rest: salt %.6e psu·m³ | wet volume %.6e m³ | mean S %.4f | unstable pairs %d (worst Δρ %.3f kg/m³)",
+                   SV, V, SV/V, n, w)
+end
+
 const wall_t0   = Ref(Base.time())
 const wall_last = Ref(Base.time())
 const sim_last  = Ref(0.0)
@@ -423,6 +486,16 @@ function progress(sim)
         end
     end
 
+    SV, V = salt_and_volume(model)
+    ninv, worstΔρ = static_instability(model)
+    if vol₀[] == 0.0
+        salt₀[], vol₀[] = SV, V
+        @info @sprintf("        drift baseline set at t = %s (σ reconciled): salt %.6e | volume %.6e",
+                       prettytime(time(sim)), SV, V)
+    end
+    @info @sprintf("        conservation: salt %+.3e | volume %+.3e (relative drift vs baseline) | mean S %.4f | unstable pairs %d (worst Δρ %.3f)",
+                   (SV - salt₀[]) / salt₀[], (V - vol₀[]) / vol₀[], SV / V, ninv, worstΔρ)
+
     now  = Base.time(); wall = now - wall_t0[]
     Δwall, Δsim = now - wall_last[], time(sim) - sim_last[]
     wall_last[], sim_last[] = now, time(sim)
@@ -461,5 +534,10 @@ ocean.output_writers[:strait_section] = JLD2Writer(ocean.model, output_fields;
     schedule = output_schedule, overwrite_existing = true, indices = (:, j_strait, :), filename = out("strait_section"))
 ocean.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
     schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
+
+# A 28 h run should survive a crash. cleanup keeps only the most recent checkpoint (~300 MB).
+ocean.output_writers[:checkpointer] = Checkpointer(ocean.model;
+    schedule = TimeInterval(12hours), dir = @__DIR__, prefix = "redsea_checkpoint$(tag)",
+    overwrite_existing = true, cleanup = true)
 
 run!(ocean)
