@@ -1,7 +1,19 @@
 # Red Sea + Gulf of Aden configuration
 
-Second OBC test domain, adapted from `salish_sea/`. **Status: validated — stable 7-day run at 0.05°
-(5.2 km).** Model: `redsea_glorys_obc.jl`.
+Second OBC test domain, adapted from `salish_sea/`. **Status: validated unforced — stable 7-day run at
+0.05° (5.2 km). JRA55 atmospheric forcing wired and smoke-tested, not yet validated.**
+Model: `redsea_glorys_obc.jl`.
+
+| flag | default | |
+|---|---|---|
+| `REDSEA_DELTA` | `0.05` | horizontal resolution in degrees |
+| `REDSEA_ATMOS` | `JRA` | `JRA` or `none` |
+| `REDSEA_JRA_DATASET` | `repeat` | `repeat` (cached) or `multiyear` (~12 GB download) |
+| `REDSEA_ZSTAR` | `1` | `0` falls back to static z |
+| `REDSEA_PASSES` | `5` | bathymetry smoothing passes |
+| `REDSEA_WENO_ORDER` | `7` | tracer advection order |
+| `REDSEA_STOP_DAYS` | `7` | run length |
+| `REDSEA_TAG` | `""` | appended to output filenames, so an A/B run cannot clobber a baseline |
 
 ## Why this domain
 
@@ -134,6 +146,79 @@ not more `fill_down!`.
 
 ![interior check](redsea_glorys_interior_check.png)
 
+## Atmospheric forcing (JRA55)
+
+`REDSEA_ATMOS=JRA` (default) builds a `JRA55PrescribedAtmosphere` and `JRA55PrescribedRadiation`,
+wraps the ocean in `OceanOnlyModel`, and runs an `Oceananigans.Simulation` over the coupled model.
+`REDSEA_ATMOS=none` reproduces the unforced configuration that the 7-day validation used.
+
+**The API differs from older ClimaOcean/NumericalEarth examples**, in ways that fail loudly or, worse,
+quietly:
+
+| older example | NumericalEarth 0.6.1 |
+|---|---|
+| `Radiation(arch)` | `JRA55PrescribedRadiation(arch; …)` — radiation is a **separate top-level component**; SW/LW left the atmosphere |
+| `JRA55NetCDFBackend(41)` | gone — use `time_indices_in_memory = 41` |
+| `include_rivers_and_icebergs = false` | gone — the constructor builds rain + snow only |
+| `NumericalEarth.Simulation` | `Oceananigans.Simulation` |
+
+**The trap worth knowing:** this script passes custom `T`/`S` boundary conditions, and if
+`ocean_simulation` *replaced* rather than merged them the surface fluxes would be silently discarded —
+forcing that appears to run and does nothing. It merges **side by side**
+(`Oceans/ocean_simulation.jl:merge_boundary_conditions`): every side left unspecified inherits the
+default, so the east-only conditions keep the default top flux BC. Re-check this on any version bump.
+
+**Dataset.** `RepeatYearJRA55` by default: it is already cached (~12 GB) and its year runs
+1990-01-01..12-31, so mapping `run_start` onto the same month and day keeps the **season** aligned with
+the 1993 GLORYS ocean. The synoptic weather is *not* 1993's. `REDSEA_JRA_DATASET=multiyear` uses the
+real 1993 fields — correct, but another ~12 GB download against ~12 GB free disk, so clear space first.
+
+**Rivers are correctly absent.** JRA55 carries `:river_freshwater_flux`, but the 0.6.1 constructor
+does not build it and `land = nothing` means no runoff routing. That is right for this basin: the Red
+Sea has no perennial rivers (E ≈ 2 m/yr against P ≈ 0.06 m/yr, runoff ≈ 0), unlike the Salish Sea where
+the Fraser was first-order. The whole freshwater balance here is evaporation against strait inflow.
+
+Measured at 0.2°, the domain-integrated surface freshwater flux is **−0.60 m/yr** (net evaporation),
+the right sign and a plausible magnitude for a domain half Gulf of Aden.
+
+## The net-transport correction, measured and removed
+
+The original configuration corrected the parent's spurious net transport through the east section.
+That correction has been **removed**; only the diagnostic remains. Two findings drove it.
+
+**It carried a sign error through the entire 7-day validation run.** The formula
+`Δu = (Q_raw − Q_target)/A` was negated for the east boundary *and* the correction still added to the
+exterior — inverting twice — so the exterior was driven to `2Q − Q_target`, doubling the imbalance it
+was meant to remove. Verified numerically: `Q_raw = +3.15e5` → `+6.31e5` as coded (exactly 2×),
+`+1.5e-8` corrected.
+
+**Fixing it changed nothing.** A 2-day re-run at 0.05° against the validated run, at identical
+iterations, mean over t ≥ 0.5 d once the transient is gone:
+
+| | buggy | fixed |
+|---|---|---|
+| strait net | −2.822e5 | −2.838e5 (−0.6%) |
+| volume drift | −4.384e-05 | −4.320e-05 |
+| max\|u\| | 0.6620 | 0.6621 |
+| max\|η\| | 0.3911 | 0.3903 |
+
+The two runs bracket the no-correction case (`Δu = 0` sits between `+2.07e-4` and `−2.07e-4`), so
+removal is measured, not assumed. The reason is that Flather is a restoring feedback, not an
+integrator: η settles ~4 mm below the exterior and sources the residual indefinitely. Evaporation's
+~1.3e4 m³/s demand needs ~0.2 mm, so the boundary supplies that unaided too.
+
+**`Q_raw` is still reported.** It measures parent/child disagreement rather than physics, and it flips
+sign with resolution — `+3.15e5 m³/s` at 0.2° against `−1.49e5` at 0.05° — as well as varying day to
+day with the parent fields.
+
+**This vindicates the strait conclusion below.** The asymmetric Bab el-Mandeb exchange was briefly
+suspected of being this boundary bug; the re-run shows the sign error accounts for under 1% of it, so
+the missing surface forcing remains the explanation.
+
+**A caveat on the 2-day window.** Strait ΔS oscillates through zero during spin-up: mean over
+1.5–2.5 d is **+1.334** (wrong sign for an inverse estuary) against **−1.004** over t ≥ 6 d. Judging
+this configuration's strait from a 2-day run would give the opposite answer.
+
 ## Resolution and cost (CPU)
 
 | Δ | km at 20°N | columns | 7-day run |
@@ -170,8 +255,9 @@ raise `z_scale` to ~600 for a 2.8 m cell.
 - **`interpolation_passes = 5`, not 10**, with a startup check that reports the Bab el-Mandeb
   cross-section and warns if smoothing closed it. Ten passes shut a comparable Salish channel.
 - **Sponge 0.5° on the east edge only**, ~7° from the strait, so the passage runs free.
-- **`net_transport_target` sign is inverted in principle**: evaporation-driven, so once surface
-  forcing is added the target becomes net *inflow*, where a river-forced domain needs net outflow.
+- **No net-transport correction at all.** The Salish script corrects the parent's spurious net
+  transport through the boundary; this one measured it and removed it (see *The net-transport
+  correction, measured and removed*). The GLORYS residual is still reported as a diagnostic.
 - **Exchange diagnostic is at the strait, not the boundary.** At 50°E nothing has been transformed
   yet — the boundary ΔS came out at 0.03 psu. The Bab el-Mandeb section is the number to compare
   with observations (~0.3–0.4 Sv each way).

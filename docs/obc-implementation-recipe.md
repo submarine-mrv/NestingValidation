@@ -31,9 +31,43 @@ a 2-tuple, and the Chapman halo fill is byte-identical. Upgrading reproduced a 1
 6. **Parent data is zero-filled below its deepest valid level**, and those zeros ARE sampled at wet model points wherever your bathymetry is deeper than the parent's. Interpolation then blends a valid value with zero and yields *anything in between* — so an absolute floor cannot clean it. Repair by **vertical fill-down** (replace sub-floor values with the deepest valid value above) and check the parent's actual validity depth per level before trusting a boundary that reaches below it.
 7. **Initialize η from the parent's sea surface height, not from rest.** Starting at η=0 while the boundary says +0.2 m manufactures a basin-filling transient lasting hours (L/√(gH) sets the timescale) that swamps every bounded test. This was worth ~100× in the volume budget.
 
-## Net-transport correction
+## Net-transport correction — measured, and removed
 
-Parent velocities interpolated onto a different (usually better-resolved) bathymetry do **not** conserve volume. Standard fix: subtract a spatially uniform normal-velocity `Δu = (Q_raw − Q_target)/A` from the boundary exteriors, applied to **both** the 3-D normal flow and the depth-integrated Flather transport so baroclinic and barotropic data stay consistent. Recompute from the **raw** parent data in a callback (idempotent, not a feedback loop); `Q_target = 0` with no rivers, negative (net outflow) once rivers are added. Δu can look tiny and still be doing enormous work — multiply by the boundary area before dismissing it.
+Parent velocities interpolated onto a different (usually better-resolved) bathymetry do **not**
+conserve volume. The standard fix is to subtract a spatially uniform normal-velocity
+`Δu = (Q_raw − Q_target)/A` from the boundary exteriors, applied to **both** the 3-D normal flow and
+the depth-integrated Flather transport, recomputed from the **raw** parent data in a callback.
+
+**In the Red Sea domain this was measured and found not to matter, and has been removed.** Two
+2-day runs at 0.05° whose prescribed exterior nets differed by **3.0e5 m³/s** were indistinguishable:
+strait exchange within 0.6%, `max|η|` 0.3911 vs 0.3903 m, `max|u|` 0.6620 vs 0.6621 m/s, volume drift
+within 1.5%. The no-correction case lies *between* those two, so it is bracketed without a third run.
+
+The mechanism is that **Flather is a restoring feedback, not an integrator**:
+`U = Uᵉˣᵗ + √(gH)(ηᵇ − ηᵉˣᵗ)`. To source a 1.5e5 m³/s residual, η settles ~4 mm below the exterior and
+supplies it indefinitely — no secular accumulation, which is what the volume drift shows (it
+oscillates and returns rather than ramping). The same argument covers evaporation: a Red Sea
+freshwater demand of ~1.3e4 m³/s is an *order of magnitude smaller* than the residual and needs
+~0.2 mm of offset, so the boundary supplies it unaided, seasonally too.
+
+There is a second, sharper piece of evidence. The Red Sea script carried a **sign error** in this
+correction through its entire 7-day validation run — the formula was negated for the east boundary
+*and* the correction still added, inverting twice, so the exterior was driven to `2Q − Q_target`,
+doubling the imbalance it was meant to remove. Nothing in the solution revealed it. A component whose
+sign can be inverted for a full validation run with no detectable symptom is not doing much work.
+
+**Keep `Q_raw` as a diagnostic.** It is a parent/child mismatch measure, not a physical signal, and it
+**flips sign with resolution** — `+3.15e5 m³/s` at 0.2° against `−1.49e5` at 0.05° for the same domain
+— because parent and child disagree about bathymetry and cell geometry. It also varies day to day with
+the parent fields. Reporting it tells you how badly the two grids disagree; applying it does not
+appear to buy anything.
+
+**Caveat on generality.** This was measured on a domain with an unusually forgiving boundary: a
+719 km² section carrying 24–45 Sv of gross exchange, so the residual is ~0.4% of throughflow. The
+Salish Sea west boundary was 1.6 km². The restoring argument does not depend on section size, so the
+same conclusion is expected there, but it is **untested** — `salish_sea/` still applies the
+correction. Do not assume a rigid-lid or prescribed-transport boundary behaves this way; the whole
+argument rests on having a radiating barotropic mode and a free surface.
 
 ## Diagnostics that earned their place
 
@@ -51,8 +85,9 @@ NumericalEarth ≥ 0.6.1 provides `FreshwaterExchange` in `ocean_simulation`: ea
 prescribed tracer concentration (zero salinity for pure water, its own temperature for heat), and
 only the live surface value is read, which cancels the z\* "ambient carry" to machine precision.
 Adding a source is a two-line change there (`carrying += Jʷ`, `content += c·Jʷ`). Prefer this over
-hand-rolling a virtual salt flux through `additional_surface_fluxes`. Note the sign convention on any
-net-transport correction must then become a net **outflow** equal to the discharge.
+hand-rolling a virtual salt flux through `additional_surface_fluxes`. If you reinstate a
+net-transport correction, its target must then become a net **outflow** equal to the discharge — but
+see above for whether it is worth having at all.
 
 ## Method lessons
 

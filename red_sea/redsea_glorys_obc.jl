@@ -182,17 +182,27 @@ S_fts, S_native = S_restoring.field_time_series, S_restoring.native_grid
 u_fts, u_native = u_restoring.field_time_series, u_restoring.native_grid
 v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 
-# --- Net-transport correction ------------------------------------------------
-# One boundary, so Δu = (Q_raw - Q_target)/A applies to the east section alone.
-# Q_target = 0 while there is no surface buoyancy forcing. NOTE the sign convention differs from a
-# river-forced domain: the Red Sea is evaporation-driven, so once evaporation is added the target
-# becomes a net INFLOW (positive) equal to E, where a river-forced domain needs a net outflow.
-net_transport_target = 0.0
-const transport_correction = Ref(0.0)
+# --- GLORYS section residual (diagnostic only) --------------------------------
+# There is NO net-transport correction. The raw GLORYS exterior carries a nonzero net transport
+# through the east section, but correcting it turned out not to matter: two 2-day runs whose
+# prescribed exterior nets differed by 3.0e5 m³/s were indistinguishable (strait exchange within
+# 0.6%, max|η| and max|u| unchanged, volume drift within 1.5%), and the no-correction case lies
+# BETWEEN those two, so it is already bracketed.
+#
+# The reason is that Flather is a restoring feedback, not an integrator: U = Uᵉˣᵗ + √(gH)(ηᵇ − ηᵉˣᵗ),
+# so η settles ~4 mm below the exterior and sources the residual indefinitely without accumulating.
+# The same holds for evaporation, whose demand (~1.3e4 m³/s) is an order of magnitude SMALLER than
+# the residual and needs ~0.2 mm. Removing the correction also removes a global Ref mutated by a
+# callback and read inside boundary-condition closures -- machinery that carried a sign error through
+# an entire validation run with no detectable symptom. See docs/obc-implementation-recipe.md.
+#
+# Q_raw is still worth measuring: it is a PARENT/CHILD MISMATCH, not a physical signal, and it flips
+# sign with resolution (+3.15e5 m³/s at 0.2°, -1.49e5 at 0.05°) because parent and child disagree
+# about bathymetry and cell geometry. `progress` reports it.
 
 # East boundary: positive u is OUT of the domain, so inflow is -u.
 @inline u_east_exterior(j, k, grid, clock, fields) =
-    DW.interpolate_to_grid(u_fts, grid.Nx, j, k, u_native, grid, Time(clock.time)) + transport_correction[]
+    DW.interpolate_to_grid(u_fts, grid.Nx, j, k, u_native, grid, Time(clock.time))
 
 @inline T_east_exterior(j, k, grid, clock, fields) =
     DW.interpolate_to_grid(T_fts, grid.Nx, j, k, T_native, grid, Time(clock.time))
@@ -218,7 +228,7 @@ zos_native = zos_fts.grid
     U = zero(grid)
     @inbounds for kk in 1:grid.Nz
         wet = wetcell(i, j, kk, grid, Face(), Center(), Center())
-        uk  = DW.interpolate_to_grid(u_fts, i, j, kk, u_native, grid, t) + transport_correction[]
+        uk  = DW.interpolate_to_grid(u_fts, i, j, kk, u_native, grid, t)
         U  += ifelse(wet, uk * Δzᶠᶜᶜ(i, j, kk, grid), zero(grid))
     end
     return (U, zos_at(i, j, grid, t))
@@ -243,6 +253,38 @@ ocean = ocean_simulation(grid;
                          forcing = (T = T_restoring, S = S_restoring,
                                     u = u_restoring, v = v_restoring),
                          boundary_conditions = (; u = u_bcs, U = U_bcs, η = η_bcs, T = T_bcs, S = S_bcs))
+
+# --- Atmospheric forcing -----------------------------------------------------
+# API note: this differs from older ClimaOcean/NumericalEarth examples. In 0.6.1 radiation is a
+# SEPARATE top-level component (SW/LW left the atmosphere), there is no `JRA55NetCDFBackend` --
+# `time_indices_in_memory` replaces it -- and `Simulation` is Oceananigans', not NumericalEarth's.
+# Rivers/icebergs are simply not built by the constructor, so there is no kwarg to switch them off.
+#
+# Dataset: RepeatYearJRA55 by default because it is already cached (~12 GB) and its year runs
+# 1990-01-01..12-31, so mapping run_start onto the same month/day keeps the SEASON aligned with the
+# 1993 GLORYS ocean. It is a repeating climatological year, so the synoptic weather does NOT
+# correspond to 1993. REDSEA_JRA_DATASET=multiyear uses the real 1993 fields instead -- correct, but
+# it is another ~12 GB download and the disk had only ~12 GB free, so check before switching.
+atmos_source = get(ENV, "REDSEA_ATMOS", "JRA")     # "JRA" | "none"
+use_atmos = atmos_source == "JRA"
+jra_multiyear = get(ENV, "REDSEA_JRA_DATASET", "repeat") == "multiyear"
+
+atmosphere = nothing
+radiation  = nothing
+if use_atmos
+    jra_dataset = jra_multiyear ? NumericalEarth.MultiYearJRA55() : NumericalEarth.RepeatYearJRA55()
+    # Repeat-year data lives in 1990; shift the run window onto it so t = 0 is the same day of year.
+    # Qualify: Oceananigans.Units also exports `day`/`year`, which shadows the Dates accessors.
+    jra_year   = jra_multiyear ? Dates.year(run_start) : 1990
+    jra_start  = DateTime(jra_year, Dates.month(run_start), Dates.day(run_start))
+    jra_stop   = jra_start + Day(run_days + margin_days)
+    @info @sprintf("JRA55 %s: %s .. %s", jra_multiyear ? "MultiYear" : "RepeatYear", jra_start, jra_stop)
+
+    atmos_kw = (; dataset = jra_dataset, start_date = jra_start, end_date = jra_stop,
+                  time_indices_in_memory = 24)     # 3-hourly, so 24 slices = 3 days resident
+    atmosphere = NumericalEarth.JRA55PrescribedAtmosphere(arch; atmos_kw...)
+    radiation  = NumericalEarth.JRA55PrescribedRadiation(arch; atmos_kw...)
+end
 
 # --- Initial conditions ------------------------------------------------------
 # Sampled from the SAME repaired FieldTimeSeries the nudging and the boundary use, so IC and forcing
@@ -275,6 +317,23 @@ let ηi = interior(η_field), t₀ = Time(0.0)
     end
 end
 @info @sprintf("η from GLORYS zos: [%.4f, %.4f] m", minimum(interior(η_field)), maximum(interior(η_field)))
+
+# --- Coupled model -----------------------------------------------------------
+# ocean_simulation merges user boundary conditions SIDE BY SIDE with its defaults (every side left
+# unspecified inherits the default), so the east-only T/S conditions above keep the default TOP flux
+# boundary condition and the atmospheric fluxes do reach the ocean. Verified in
+# Oceans/ocean_simulation.jl:merge_boundary_conditions -- worth re-checking on any version bump,
+# because a replace-rather-than-merge would silently disable surface forcing.
+if use_atmos
+    coupled_model = NumericalEarth.OceanOnlyModel(ocean; atmosphere, radiation)
+    simulation = Simulation(coupled_model; Δt = 10, stop_iteration = 100)
+else
+    simulation = ocean
+end
+
+# `coupled_model.ocean` is the ocean SIMULATION, not the model; unforced runs hand `progress` the
+# ocean model directly. Everything below goes through this so both paths share one code path.
+ocean_model_of(m) = hasproperty(m, :ocean) ? (hasproperty(m.ocean, :model) ? m.ocean.model : m.ocean) : m
 
 # --- Diagnostics -------------------------------------------------------------
 z_centers = znodes(grid, Center(), Center(), Center())
@@ -358,8 +417,25 @@ function east_exchange(model)
     return Qin, Qout, (Qin > 0 ? SQin/Qin : 0.0), (Qout < 0 ? SQout/Qout : 0.0)
 end
 
-function update_transport_correction!(sim)
-    t = Time(sim.model.clock.time)
+# ∫ Jʷ dA over wet surface cells. Jʷ lives on the coupled interfaces, so it is zero without an
+# atmosphere. The basin-mean rate this implies is printed by `progress` in m/yr, which is the number
+# to sanity-check: the Red Sea proper evaporates ~2 m/yr, and a domain half Gulf of Aden should still
+# come out clearly negative. A POSITIVE value means the domain is gaining freshwater and the
+# overturning will run backwards -- see red_sea/README.md.
+function surface_freshwater_flux(m)
+    use_atmos || return 0.0
+    Jη = m.interfaces.net_fluxes.ocean.η
+    Q = 0.0
+    @inbounds for j in 1:Ny, i in 1:Nx
+        immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()) && continue
+        Q += Jη[i, j, 1] * Azᶜᶜᶜ(i, j, Nz, grid)
+    end
+    return Q
+end
+
+# Net inflow the RAW GLORYS exterior would carry through the east section, and the section area.
+# Diagnostic only -- nothing is corrected with it.
+function glorys_section_residual(t)
     Q = A = 0.0
     for j in 1:Ny, k in 1:Nz
         wetcell(Nx, j, k, grid, Face(), Center(), Center()) || continue
@@ -367,13 +443,13 @@ function update_transport_correction!(sim)
         Q -= DW.interpolate_to_grid(u_fts, Nx, j, k, u_native, grid, t) * a
         A += a
     end
-    transport_correction[] = A > 0 ? -(Q - net_transport_target) / A : 0.0
-    return nothing
+    return Q, A
 end
-update_transport_correction!(ocean)
-add_callback!(ocean, update_transport_correction!, IterationInterval(10))
-@info @sprintf("Initial net-transport correction: Δu = %+.4e m/s (target net = %.1f m³/s)",
-               transport_correction[], net_transport_target)
+
+let (Q, A) = glorys_section_residual(Time(0.0))
+    @info @sprintf("GLORYS section residual at t=0: Q_raw = %+.4e m³/s over A = %.4e m² (Δu-equivalent %+.3e m/s); NOT corrected",
+                   Q, A, A > 0 ? Q / A : 0.0)
+end
 
 # Excursion is referenced to the FORCING DATA range, not the IC: the boundary can legitimately import
 # water outside the initial range, and referencing the IC reports physical adjustment as spurious.
@@ -450,7 +526,7 @@ const wall_last = Ref(Base.time())
 const sim_last  = Ref(0.0)
 
 function progress(sim)
-    model = sim.model
+    model = ocean_model_of(sim.model)
     u, v, w = model.velocities
     T, S = model.tracers.T, model.tracers.S
     η = free_surface_field(model.free_surface)
@@ -467,8 +543,9 @@ function progress(sim)
                    Tmin, Tmax, Smin, Smax, Smin - S_ref[1], Smax - S_ref[2])
     @info @sprintf("        where: Smax %s | Smin %s | max|w| %s | max|u| %s",
                    whereis(Imax), whereis(Imin), whereis(Iw), whereis(Iu))
-    @info @sprintf("        transport: east %+.4e m³/s (+ = inflow)  ->  %+.3e m/hour mean sea level",
-                   Φ, Φ / wet_surface_area * 3600)
+    Qraw, _ = glorys_section_residual(Time(model.clock.time))
+    @info @sprintf("        transport: east %+.4e m³/s (+ = inflow)  ->  %+.3e m/hour mean sea level | GLORYS residual %+.4e (uncorrected)",
+                   Φ, Φ / wet_surface_area * 3600, Qraw)
 
     Qin, Qout, Sin, Sout = east_exchange(model)
     @info @sprintf("        east boundary: Qin %+.3e  Qout %+.3e m³/s | ΔS %.3f  (boundary activity, not transformation)",
@@ -488,13 +565,24 @@ function progress(sim)
 
     SV, V = salt_and_volume(model)
     ninv, worstΔρ = static_instability(model)
-    if vol₀[] == 0.0
+    # iteration > 0 is load-bearing: σ is reconciled inside the first time_step!, and under the
+    # coupled model progress fires at iteration 0 BEFORE that happens. Baselining there books the
+    # reconciliation as a +3.7e-4 volume jump -- the artifact this whole scheme exists to avoid.
+    if vol₀[] == 0.0 && iteration(sim) > 0
         salt₀[], vol₀[] = SV, V
         @info @sprintf("        drift baseline set at t = %s (σ reconciled): salt %.6e | volume %.6e",
                        prettytime(time(sim)), SV, V)
     end
-    @info @sprintf("        conservation: salt %+.3e | volume %+.3e (relative drift vs baseline) | mean S %.4f | unstable pairs %d (worst Δρ %.3f)",
-                   (SV - salt₀[]) / salt₀[], (V - vol₀[]) / vol₀[], SV / V, ninv, worstΔρ)
+    if use_atmos
+        Qfw = surface_freshwater_flux(sim.model)
+        @info @sprintf("        surface freshwater: %+.4e m³/s (%+.3f m/yr basin mean)",
+                       Qfw, Qfw / wet_surface_area * 3.15576e7)
+    end
+    have_base = vol₀[] > 0
+    @info @sprintf("        conservation: salt %s | volume %s (relative drift vs baseline) | mean S %.4f | unstable pairs %d (worst Δρ %.3f)",
+                   have_base ? @sprintf("%+.3e", (SV - salt₀[]) / salt₀[]) : "  (baseline pending)",
+                   have_base ? @sprintf("%+.3e", (V  - vol₀[])  / vol₀[])  : "  (pending)",
+                   SV / V, ninv, worstΔρ)
 
     now  = Base.time(); wall = now - wall_t0[]
     Δwall, Δsim = now - wall_last[], time(sim) - sim_last[]
@@ -506,38 +594,43 @@ function progress(sim)
     flush(stderr)
     return nothing
 end
-add_callback!(ocean, progress, IterationInterval(10))
+add_callback!(simulation, progress, IterationInterval(10))
 
 # --- Spin-up then the run ----------------------------------------------------
-ocean.Δt = 10
-ocean.stop_iteration = 100
-run!(ocean)
+simulation.Δt = 10
+simulation.stop_iteration = 100
+run!(simulation)
 
-ocean_timescale(model) = cell_advection_timescale(model)
+ocean_timescale(model) = cell_advection_timescale(ocean_model_of(model))
 wizard = TimeStepWizard(; cfl = 0.15, max_Δt = 15minutes, max_change = 1.1, cell_advection_timescale = ocean_timescale)
-ocean.callbacks[:wizard] = Callback(wizard, IterationInterval(10))
-ocean.stop_iteration = Inf
+simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(10))
+simulation.stop_iteration = Inf
 stop_days = parse(Float64, get(ENV, "REDSEA_STOP_DAYS", string(run_days)))
-ocean.stop_time = stop_days * days
+simulation.stop_time = stop_days * days
 
 output_fields   = merge(ocean.model.velocities, ocean.model.tracers)
 output_schedule = TimeInterval(6hours)
+# Atmosphere is tagged so forced runs never overwrite the unforced 7-day validation baseline.
+# REDSEA_TAG appends an arbitrary label so an A/B run cannot overwrite a baseline whose flags are
+# otherwise identical -- an unforced re-run tags `_zstar` exactly like the 7-day validation does.
 tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
-      (Δdeg == 0.05 ? "" : "_d$(replace(string(Δdeg), "." => ""))")
+      (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
+      (Δdeg == 0.05 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
+      get(ENV, "REDSEA_TAG", "")
 out(name) = joinpath(@__DIR__, "redsea_glorys_$(name)$(tag)")
 
-ocean.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
+simulation.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
     schedule = output_schedule, overwrite_existing = true, indices = (:, :, Nz), filename = out("surface"))
-ocean.output_writers[:east_section] = JLD2Writer(ocean.model, output_fields;
+simulation.output_writers[:east_section] = JLD2Writer(ocean.model, output_fields;
     schedule = output_schedule, overwrite_existing = true, indices = (Nx, :, :), filename = out("east_section"))
-ocean.output_writers[:strait_section] = JLD2Writer(ocean.model, output_fields;
+simulation.output_writers[:strait_section] = JLD2Writer(ocean.model, output_fields;
     schedule = output_schedule, overwrite_existing = true, indices = (:, j_strait, :), filename = out("strait_section"))
-ocean.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
+simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
     schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
 
 # A 28 h run should survive a crash. cleanup keeps only the most recent checkpoint (~300 MB).
-ocean.output_writers[:checkpointer] = Checkpointer(ocean.model;
+simulation.output_writers[:checkpointer] = Checkpointer(ocean.model;
     schedule = TimeInterval(12hours), dir = @__DIR__, prefix = "redsea_checkpoint$(tag)",
     overwrite_existing = true, cleanup = true)
 
-run!(ocean)
+run!(simulation)
