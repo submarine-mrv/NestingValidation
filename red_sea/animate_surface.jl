@@ -1,13 +1,14 @@
 # animate_surface.jl -- surface T and S over the 7-day validation run.
 # Frames come from the `surface` JLD2 writer: 6-hourly, t = 0.25 .. 7.00 d (TimeInterval writes at the
 # first interval, so there is no t = 0 frame and the sub-6 h adjustment transient is not resolved).
-# Usage: julia --project=<repo> red_sea/animate_surface.jl
+# Usage: julia --project=<repo> red_sea/animate_surface.jl [tag]
 
 using Oceananigans, CairoMakie, Printf, Statistics
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node
 
-infile  = joinpath(@__DIR__, "redsea_glorys_surface_zstar.jld2")
-outfile = joinpath(@__DIR__, "redsea_surface_7day.mp4")
+tag     = length(ARGS) > 0 ? ARGS[1] : "_zstar"
+infile  = joinpath(@__DIR__, "redsea_glorys_surface$(tag).jld2")
+outfile = joinpath(@__DIR__, "redsea_surface_7day$(tag == "_zstar" ? "" : tag).mp4")
 
 Ts = FieldTimeSeries(infile, "T")
 Ss = FieldTimeSeries(infile, "S")

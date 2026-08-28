@@ -1,12 +1,14 @@
 # plot_validation.jl -- summarise the 7-day validation run: the four monitored time series from the
 # run log, plus the final surface and Bab el-Mandeb sections from the JLD2 output.
-# Usage: julia --project=<repo> red_sea/plot_validation.jl [logfile]
+# Usage: julia --project=<repo> red_sea/plot_validation.jl [logfile] [tag]
+#   tag selects the JLD2 output set and names the figure, e.g. "_zstar_jraryf" for the forced run.
 
 using Oceananigans, CairoMakie, Printf
 using Oceananigans.Fields: location
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node
 
 logfile = length(ARGS) > 0 ? ARGS[1] : joinpath(@__DIR__, "redsea_validation_7day.log")
+tag     = length(ARGS) > 1 ? ARGS[2] : "_zstar"
 
 # --- time series from the log ------------------------------------------------
 secs = Dict("second"=>1.0,"seconds"=>1.0,"minute"=>60,"minutes"=>60,"hour"=>3600,"hours"=>3600,"day"=>86400,"days"=>86400)
@@ -61,7 +63,7 @@ lines!(ax6, tq, dS; linewidth = 2, color = :seagreen)
 hlines!(ax6, [0.0]; color = :gray, linestyle = :dot); ylims!(ax6, -2, 2)
 
 # --- final fields ------------------------------------------------------------
-sfile = joinpath(@__DIR__, "redsea_glorys_surface_zstar.jld2")
+sfile = joinpath(@__DIR__, "redsea_glorys_surface$(tag).jld2")
 if isfile(sfile)
     Ss = FieldTimeSeries(sfile, "S")
     g = Ss.grid; Nx, Ny, Nz = size(g)
@@ -75,6 +77,6 @@ if isfile(sfile)
         col == 2 && Colorbar(fig[3, 3, Left()], hm; width = 12, label = "S (psu)")
     end
 end
-outpng = joinpath(@__DIR__, "redsea_validation_7day.png")
+outpng = joinpath(@__DIR__, "redsea_validation_7day$(tag == "_zstar" ? "" : tag).png")
 save(outpng, fig)
 @info "Saved $outpng"

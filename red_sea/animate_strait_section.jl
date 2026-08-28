@@ -6,13 +6,15 @@
 # and the Red Sea Outflow Water descending into the Gulf of Aden (right, full depth).
 #
 # 6-hourly frames, t = 0.25 .. 7.00 d -- no t = 0 frame, and the sub-6 h adjustment transient is not
-# resolved. Usage: julia --project=<repo> red_sea/animate_strait_section.jl
+# resolved. Usage: julia --project=<repo> red_sea/animate_strait_section.jl [tag]
 
 using Oceananigans, CairoMakie, Printf, Statistics
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node
 
-infile  = joinpath(@__DIR__, "redsea_glorys_strait_section_zstar.jld2")
-outfile = joinpath(@__DIR__, "redsea_strait_section_7day.mp4")
+tag     = length(ARGS) > 0 ? ARGS[1] : "_zstar"
+sfx     = tag == "_zstar" ? "" : tag
+infile  = joinpath(@__DIR__, "redsea_glorys_strait_section$(tag).jld2")
+outfile = joinpath(@__DIR__, "redsea_strait_section_7day$(sfx).mp4")
 
 Ss = FieldTimeSeries(infile, "S")
 vs = FieldTimeSeries(infile, "v")
@@ -67,7 +69,7 @@ for (row, (data, lab, cmap, rng)) in enumerate(((dS, "S (psu)", :haline, Srange)
 end
 
 n[] = nt
-save(joinpath(@__DIR__, "redsea_strait_section_day7.png"), fig)
+save(joinpath(@__DIR__, "redsea_strait_section_day7$(sfx).png"), fig)
 
 record(fig, outfile, 1:nt; framerate = 4) do i
     n[] = i

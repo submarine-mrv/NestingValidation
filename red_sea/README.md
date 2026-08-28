@@ -1,7 +1,7 @@
 # Red Sea + Gulf of Aden configuration
 
-Second OBC test domain, adapted from `salish_sea/`. **Status: validated unforced — stable 7-day run at
-0.05° (5.2 km). JRA55 atmospheric forcing wired and smoke-tested, not yet validated.**
+Second OBC test domain, adapted from `salish_sea/`. **Status: validated both unforced and JRA55-forced —
+stable 7-day runs at 0.05° (5.2 km). Strait transports are not yet converged; see below.**
 Model: `redsea_glorys_obc.jl`.
 
 | flag | default | |
@@ -338,6 +338,54 @@ should not be quoted as a hindcast.
 
 ![validation](redsea_validation_7day.png)
 
+## Forced 7-day run — what evaporation changes
+
+`REDSEA_ATMOS=JRA`, 0.05°, 7 days: 2480 iterations, **22.9 h wall** at 37.2 s/iter, Δt settling near
+5–6 min. About 31% slower than the unforced run — that is the coupled flux computation.
+
+**Evaporation converges on the right value.** The domain-integrated surface freshwater flux builds
+from −0.58 m/yr at t = 0 (surface not yet spun up) to a settled **−1.875 m/yr** over t ≥ 5 d
+(range −2.29 to −1.62), against a literature Red Sea value of ~2 m/yr.
+
+**The strait asymmetry is the missing forcing, confirmed by direct test.**
+
+| mean over t ≥ 5 d | unforced | forced | literature |
+|---|---|---|---|
+| strait Qin | 0.103 Sv | **0.289 Sv** | ~0.3–0.4 Sv |
+| strait Qout | −0.159 Sv | **−0.239 Sv** | ~0.3–0.4 Sv |
+| strait net | −0.056 Sv | **+0.050 Sv** | net inflow |
+| ΔS | −1.061 | −0.921 | negative |
+
+The inflow limb strengthens 2.8×, both limbs land within a factor of ~1.3 of observations, and the
+**net flips sign from outflow to inflow** — which is the physics: evaporation pulls the compensating
+inflow. The freshwater budget closes to about 25%: strait net inflow **+5.0e4 m³/s** against surface
+loss **−4.0e4 m³/s**.
+
+**But the transports are not converged.** The net's standard deviation over t ≥ 5 d is **0.19 Sv**
+against a mean of 0.050 Sv — variability nearly 4× the mean, with Qin swinging between 0.12 and
+0.80 Sv on a 2–3 day timescale. Qout is far steadier (−0.19 to −0.29 Sv): the dense outflow over the
+sill is well behaved, and the inflow limb is what swings. **Quote the sign and the order of magnitude,
+not the numbers.** Seven days is not long enough to settle this.
+
+**Convection is now diurnal.** Unstable pairs rise from 7,403 (unforced mean) to **70,760**, ranging
+10,558–135,184, and the series autocorrelates at a lag of **23.4 h** with harmonics at 2.0 and 3.0
+days. That is the JRA55 diurnal heating cycle driving nighttime convection — a signature the unforced
+configuration structurally cannot have, so the increase is expected rather than alarming. Worst Δρ
+does peak near **1.05 kg/m³**, above the initial condition's 0.92, so the forcing generates stronger
+inversions than the IC contained; nothing destabilises, but it is worth watching at longer run lengths.
+
+**Conservation under evaporation.** Mean S rises 37.5030 → 37.5051 by day 4, then falls back to
+37.5045 as the strengthening inflow dilutes — evaporative concentration and inflow in competition,
+not a drift. Salt drift ends at 1.03e−4 and volume at 6.1e−5, both an order of magnitude larger than
+unforced, which is expected: the boundary is now importing salt and volume to replace what evaporates.
+
+**A correction to an earlier claim in this file.** Peak temperature was attributed to surface heating
+letting the model exceed the parent range. That is wrong — the *unforced* run reached **29.075** and
+the forced run only **28.681**, both above the GLORYS parent maximum of 28.234, and the unforced run
+has no heat flux at all. The T overshoot is not atmospheric; it is unexplained.
+
+![forced validation](redsea_validation_7day_zstar_jraryf.png)
+
 ## Status and what is untested
 
 The 7-day run at 0.05° is stable and conserves (see *Validation*). Still not established:
@@ -346,8 +394,13 @@ The 7-day run at 0.05° is stable and conserves (see *Validation*). Still not es
 - ~~z\* is unexercised on the upgraded packages.~~ **Done** — no drift; mean S returns to its starting
   value after a 1.4e−3 psu excursion. A **static-z control was not run** (it would double the wall
   time), so this shows z\* is well behaved, not that it beats static z here.
-- **No surface forcing.** The Red Sea is evaporation-driven; without it the interior will not develop
-  a realistic overturning. Fine for a boundary test, not for physics.
+- ~~No surface forcing.~~ **Done** — JRA55, −1.875 m/yr net evaporation, strait exchange now
+  two-sided with net inflow.
+- **Strait transports are not converged** at 7 days: net sd 0.19 Sv against a 0.050 Sv mean, Qin
+  swinging 0.12–0.80 Sv on a 2–3 day timescale. Longer runs needed before quoting numbers.
+- **Peak T exceeds the parent range in BOTH configurations** (29.075 unforced, 28.681 forced, against
+  a parent maximum of 28.234) and is unexplained. It is not surface heating — the unforced run has
+  none and overshoots more.
 - ~~GLORYS validity was checked in the boundary box only.~~ **Done** — see *GLORYS validity in the
   interior*. Result: no Salish-style failure, but 700 shallow coastal density inversions of up to
   0.92 kg/m³ that a validation run needs to be watched for.
