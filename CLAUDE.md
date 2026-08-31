@@ -6,6 +6,8 @@ parent product.
 - `salish_sea/` — Salish Sea / Juan de Fuca, GLORYS-forced. Validated: stable 7-day run at 0.74 km.
 - `red_sea/` — Red Sea + Gulf of Aden, GLORYS-forced, optional JRA55 atmosphere. Validated both ways:
   stable 7-day runs at 5.2 km (17.5 h unforced, 22.9 h forced). Strait transports not yet converged.
+- `canary/` — Canary upwelling, NW Africa. Three open boundaries, wind-driven interior, islands
+  inside the domain. Geometry and parent data verified, smoke-tested; no validation run yet.
 
 ## Working agreements
 
