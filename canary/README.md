@@ -88,26 +88,69 @@ the Red Sea's actual failure mechanism.
 
 ![interior check](canary_glorys_interior_check.png)
 
-## The GLORYS residual is 35× the Red Sea's — watch this
+## The GLORYS residual, and the no-correction decision
 
 There is **no net-transport correction**, following the measurement in `red_sea/` that a Flather
-boundary absorbs the parent's spurious net transport unaided. But that was measured at 1.44e5 m³/s,
-and here the residual is far larger:
+boundary absorbs the parent's spurious net transport unaided. That was measured at 1.44e5 m³/s; here
+the residual is ~18× larger, so this domain is the sharpest available test of that decision.
 
-| | Canary | Red Sea |
+| | Canary (0.02°) | Red Sea |
 |---|---|---|
-| net residual at t=0 | **−5.009e6 m³/s** (−5 Sv) | −1.44e5 |
-| per boundary | west −6.02e6, south +1.72e6, north −7.10e5 | — |
-| uncompensated sea level | **−1.05 m/day** | −0.02 m/day |
-| η offset Flather needs | **1.3 cm** | 0.4 cm |
+| net residual at t = 0 | **−2.033e6 m³/s** | −1.44e5 |
+| per boundary at t = 0 | west −5.31e6, south +2.10e6, north +1.18e6 | — |
+| typical net once running | −2.6e6 | — |
+| uncompensated sea level | **−0.55 m/day** | −0.03 m/day |
+| η offset Flather needs | 0.69 cm | 0.04 cm |
 
-The west edge dominates, which is the Canary Current — a few Sv through a 2388 km² section is
-physically ordinary; it is the *net* that has to close. The scaling still says the boundary absorbs
-it, because the compensating velocity is only 6.6e-4 m/s over an area ten times larger. **But this
-extrapolates the no-correction conclusion 35× beyond where it was tested**, and uncorrected it would
-be a metre a day. `progress` reports actual transport per boundary alongside the uncorrected residual
-every block, so a divergence is visible immediately. This is the sharpest available test of that
-decision.
+**The decision holds.** At t = 2 days the residual reads **−2.605e6 m³/s** while the model's actual net
+transport through the same three sections is **+1.345e5 m³/s** — the boundary absorbs ~95% of a 2.6 Sv
+imbalance without help, and volume drift sits at −3.0e-6 with mean S flat. The Red Sea conclusion
+extrapolates to 18× its measured magnitude.
+
+The west edge dominates the residual, which is the Canary Current: a few Sv through a 2388 km² section
+is physically ordinary, and it is the *net* that has to close.
+
+> **Earlier versions of this file claimed −5.009e6 m³/s and "35× the Red Sea".** That was wrong on two
+> counts: it was measured at 0.1° rather than the run resolution, and it included an off-by-one in the
+> north-boundary diagnostic (sampling y-face `Ny`, an interior face, instead of `Ny+1`, the domain
+> edge). Correcting the index moved the north residual by 3.5 Sv *and flipped its sign*. The boundary
+> *conditions* were never affected — `north_V_obc` and `v_north_exterior` always used `Ny+1` — only
+> the diagnostics were.
+
+## Layered transports: comparing to the Canary Current literature
+
+Full-depth net transport is the volume budget, not a quantity any paper reports. The inverse box
+models (Hernández-Guerra 2005; Pérez-Hernández 2013; Casanova-Masjoan 2020) integrate over **neutral
+density (γⁿ)** layers — thermocline γⁿ < 27.38, intermediate 27.38–27.922, deep > 27.922.
+
+γⁿ needs the Jackett & McDougall lookup, which this stack does not have, so **σθ = ρ(T,S,0) − 1000
+stands in**. Two consequences, both measured rather than assumed:
+
+- **The deep threshold had to move.** σθ in this domain maxes at **27.798**, so a γⁿ = 27.922 bound is
+  unreachable and the deep bin reads zero. It is set to **27.70**, which is NADW here.
+- **The layers sit too deep.** The run prints where each σθ surface actually lies:
+
+  | surface | our σθ | literature γⁿ |
+  |---|---|---|
+  | 26.85 | **406 m** (median) | ~80–320 m |
+  | 27.38 | **1195 m** | ~700 m |
+
+  So our "thermocline" swallows the AAIW the literature counts as intermediate and **reads high**
+  against their numbers. Quote it with that caveat.
+
+**Fixed-depth bins would be worse, not simpler.** Isopycnals heave seasonally, so a fixed split aliases
+that heave into apparent transport change — corrupting exactly the January-versus-July comparison the
+diagnostic exists to make.
+
+Early result at t = 2 days, thermocline layer: **north +5.7 Sv (inflow), south +2.0, west −3.2**.
+The north inflow is the Canary Current entering the domain and compares well with Hernández-Guerra's
+**4.7 ± 0.8 Sv southward** north of the islands, allowing for the deep-layer bias. The **south reading
++2.0 Sv inflow is not yet explained** — the Canary Current picture says the flow should leave through
+the south — and it has been persistently positive, so it is not noise.
+
+All three boundaries are also **saved as sections** (plus a separate `north_face_v` at `Ny+1`, since
+face-in-y indexing cannot put `v` and `T`/`S` in one slice), so the layer definition can be re-binned
+offline — including with a proper γⁿ implementation later — without re-running.
 
 ## Resolution and cost
 
@@ -115,12 +158,18 @@ decision.
 |---|---|---|---|
 | 0.1° | 9.9 | 0.17 M | smoke tests only |
 | 0.05° | 5.0 | 0.66 M | ~2 h |
-| **0.02°** | **2.06** | **4.1 M** | **~21 h** (extrapolated from `red_sea/`) |
+| **0.02°** | **2.06** | **4.1 M** | **~73 h measured** (not the ~21 h extrapolated) |
 | 0.01° | 1.03 | 16.6 M | ~7 days — GPU/HPC only |
 
 The domain is 7× smaller in area than the Red Sea, which is why 2 km is affordable here when it was
 not there. **0.02° is the CPU validation resolution**; 1 km is the target for island wakes and
 upwelling filaments and needs a GPU.
+
+**The 21 h figure was wrong and the reason is worth recording.** It scaled Δt from the Red Sea by grid
+spacing, but the binding constraint here is **vertical, not horizontal**: with a 1.4 m surface cell and
+wind-driven convection, Δt settles at 1.4–3.3 min where the horizontal CFL alone (max|u| ≈ 0.5 m/s over
+2 km) would allow ~7 min. At ~40 s/iter that is **~73 h for 7 days**. Raising `CANARY_ZSCALE` would buy
+timestep at the cost of the surface resolution that motivated `scale = 700`.
 
 ## Vertical grid
 

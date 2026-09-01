@@ -21,6 +21,7 @@ using Oceananigans.Units
 using CFTime
 using Dates
 using Printf
+using Statistics
 
 const DW  = NumericalEarth.DataWrangling
 const SWP = Oceananigans.BuoyancyFormulations.SeawaterPolynomials
@@ -373,7 +374,10 @@ function boundary_transports(model)
     end
     @inbounds for k in 1:Nz, i in 1:Nx
         wetcell(i, 1, k, grid, Center(), Face(), Center())  && (S_ += v[i, 1, k]  * Ayᶜᶠᶜ(i, 1, k, grid))
-        wetcell(i, Ny, k, grid, Center(), Face(), Center()) && (N  -= v[i, Ny, k] * Ayᶜᶠᶜ(i, Ny, k, grid))
+        # Ny+1, not Ny: for Ny cells a y-Face field has Ny+1 points and the north DOMAIN EDGE is the
+        # last one. Sampling Ny measures the flux through an interior face instead, which is not the
+        # domain's volume budget. (north_V_obc already uses Ny+1.)
+        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) && (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid))
     end
     return W, S_, N
 end
@@ -389,8 +393,8 @@ function glorys_residuals(t)
     @inbounds for k in 1:Nz, i in 1:Nx
         wetcell(i, 1, k, grid, Center(), Face(), Center()) &&
             (S_ += DW.interpolate_to_grid(v_fts, i, 1, k, v_native, grid, t) * Ayᶜᶠᶜ(i, 1, k, grid))
-        wetcell(i, Ny, k, grid, Center(), Face(), Center()) &&
-            (N -= DW.interpolate_to_grid(v_fts, i, Ny, k, v_native, grid, t) * Ayᶜᶠᶜ(i, Ny, k, grid))
+        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) &&
+            (N -= DW.interpolate_to_grid(v_fts, i, Ny+1, k, v_native, grid, t) * Ayᶜᶠᶜ(i, Ny+1, k, grid))
     end
     return W, S_, N
 end
@@ -433,6 +437,48 @@ function salt_and_volume(model)
 end
 
 const eos = SWP.TEOS10.TEOS10EquationOfState()
+# Transport split by POTENTIAL density, for comparison with the Canary Current literature.
+# The inverse box models (Hernández-Guerra 2005; Pérez-Hernández 2013; Casanova-Masjoan 2020) report
+# transports over NEUTRAL density (γⁿ) layers -- thermocline γⁿ < 27.38, intermediate 27.38–27.922,
+# deep > 27.922. γⁿ needs the Jackett & McDougall lookup, which this stack does not have, so σθ =
+# ρ(T,S,0) − 1000 stands in at the same thresholds. Good at the 27.38 thermocline boundary; it drifts
+# with depth, so treat the intermediate/deep split as indicative only.
+#
+# Fixed-DEPTH bins would be the obvious alternative and are wrong for this purpose: isopycnals heave
+# seasonally, so a fixed split aliases that heave into apparent transport change -- corrupting exactly
+# the January-vs-July comparison this diagnostic exists to make.
+#
+# Literature check for the thermocline layer, our sign convention (+ = into the domain): the Canary
+# Current flows SOUTHWARD, so expect north > 0 (inflow) and south < 0 (outflow), a few Sv each, weaker
+# in January than July. Hernández-Guerra 2005 give 4.7 ± 0.8 Sv southward north of the islands.
+# Thresholds: 27.38 keeps the literature's thermocline number, but the deep bound does NOT -- σθ in
+# this domain maxes at 27.798 (coldest/saltiest corner T=1.97 S=34.944), so a γⁿ=27.922 threshold is
+# unreachable and the deep bin would always read zero. 27.70 is NADW here (T≈4.7 S≈35.15) and splits
+# the sub-thermocline water where this domain actually has a boundary.
+const σ_THERMOCLINE  = 27.38
+const σ_INTERMEDIATE = 27.70
+@inline σθ_of(T, S) = SWP.ρ(T, S, 0.0, eos) - 1000.0
+@inline density_layer(σ) = σ < σ_THERMOCLINE ? 1 : (σ < σ_INTERMEDIATE ? 2 : 3)
+
+function layered_boundary_transports(model)
+    T, S = model.tracers.T, model.tracers.S
+    u, v = model.velocities.u, model.velocities.v
+    Q = zeros(3, 3)                     # [boundary W/S/N, layer thermocline/intermediate/deep]
+    @inbounds for k in 1:Nz, j in 1:Ny
+        wetcell(1, j, k, grid, Face(), Center(), Center()) || continue
+        Q[1, density_layer(σθ_of(T[1, j, k], S[1, j, k]))] += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid)
+    end
+    @inbounds for k in 1:Nz, i in 1:Nx
+        if wetcell(i, 1, k, grid, Center(), Face(), Center())
+            Q[2, density_layer(σθ_of(T[i, 1, k], S[i, 1, k]))] += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid)
+        end
+        if wetcell(i, Ny+1, k, grid, Center(), Face(), Center())
+            Q[3, density_layer(σθ_of(T[i, Ny, k], S[i, Ny, k]))] -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid)
+        end
+    end
+    return Q
+end
+
 function static_instability(model)
     T, S = model.tracers.T, model.tracers.S
     n = 0; worst = 0.0
@@ -471,6 +517,24 @@ let (W, S_, N) = glorys_residuals(Time(0.0))
                    W, S_, N, W + S_ + N)
 end
 
+# Calibrate the proxy: report where the σθ surfaces sit in depth, so the offset from the literature's
+# γⁿ surfaces is visible rather than assumed. The papers put γⁿ=26.85 at roughly 80-320 m; if our
+# σθ=27.38 surface sits much deeper than their ~700 m thermocline base, our "thermocline" layer is
+# including intermediate water and will read high against theirs.
+let T = ocean.model.tracers.T, S = ocean.model.tracers.S
+    for σ in (26.85, σ_THERMOCLINE, σ_INTERMEDIATE)
+        d = Float64[]
+        for j in 1:Ny, i in 1:Nx
+            k = findlast(k -> wet3d[i, j, k] && σθ_of(T[i, j, k], S[i, j, k]) >= σ, 1:Nz)
+            k === nothing && continue
+            push!(d, -z_centers[k])
+        end
+        isempty(d) ? @info(@sprintf("σθ = %.2f surface: absent from this domain", σ)) :
+            @info @sprintf("σθ = %.2f surface sits at %.0f m (median over wet columns; range %.0f–%.0f)",
+                           σ, median(d), minimum(d), maximum(d))
+    end
+end
+
 const salt₀ = Ref(0.0); const vol₀ = Ref(0.0)
 let (SV, V) = salt_and_volume(ocean.model)
     n, w = static_instability(ocean.model)
@@ -505,6 +569,12 @@ function progress(sim)
                    W, So, N, W+So+N, (W+So+N) / wet_surface_area * 3600)
     @info @sprintf("        GLORYS residual (uncorrected): west %+.3e  south %+.3e  north %+.3e | net %+.3e m³/s",
                    Wr, Sr, Nr, Wr+Sr+Nr)
+
+    Q = layered_boundary_transports(model)
+    for (li, lab) in ((1, "thermocline σθ<27.38"), (2, "intermediate  <27.70"), (3, "deep      σθ≥27.70"))
+        @info @sprintf("        %s: west %+7.3f  south %+7.3f  north %+7.3f | net %+7.3f Sv",
+                       lab, Q[1,li]/1e6, Q[2,li]/1e6, Q[3,li]/1e6, sum(Q[:,li])/1e6)
+    end
 
     Tc, To, ΔT, Ts = upwelling_index(model)
     @info @sprintf("        UPWELLING: SST coastal %.3f  offshore %.3f  ΔT %+.3f °C | T at %.0f m over shelf %.3f °C",
@@ -565,6 +635,28 @@ simulation.output_writers[:west_section] = JLD2Writer(ocean.model, output_fields
 const j_shelf = argmin(abs.(φ_centers .- 26.5))
 simulation.output_writers[:shelf_section] = JLD2Writer(ocean.model, output_fields;
     schedule = output_schedule, overwrite_existing = true, indices = (:, j_shelf, :), filename = out("shelf_section"))
+# All three open boundaries are saved, so the layered transports can be RE-BINNED offline: the layer
+# definition (σθ as a γⁿ proxy, and where to put the thresholds) is the least settled part of this
+# diagnostic, and re-deriving it from file is free where re-running is not. T, S and the grid all
+# come back from these files, so σθ and area-weighted transport are fully recoverable.
+#
+# The north needs TWO writers. Face-in-y indexing puts the domain edge at Ny+1 for v while T and S
+# live at Ny, and one slice cannot hold both -- `(:, Ny, :)` would silently give the last INTERIOR
+# face, which is the off-by-one this script had until it was caught. West and south are exempt:
+# index 1 is both the boundary face and the first interior cell.
+simulation.output_writers[:south_section] = JLD2Writer(ocean.model, output_fields;
+    schedule = output_schedule, overwrite_existing = true, indices = (:, 1, :), filename = out("south_section"))
+simulation.output_writers[:north_section] = JLD2Writer(ocean.model, output_fields;
+    schedule = output_schedule, overwrite_existing = true, indices = (:, Ny, :), filename = out("north_section"))
+simulation.output_writers[:north_face_v] = JLD2Writer(ocean.model, (; v = ocean.model.velocities.v);
+    schedule = output_schedule, overwrite_existing = true, indices = (:, Ny+1, :), filename = out("north_face_v"))
+
+# Daily 3-D snapshot (~83 MB/frame, ~0.6 GB for 7 days). Cheap against the cost of re-running to
+# answer a question this run could already have answered: interior sections, water-mass
+# transformation, volume-integrated budgets.
+simulation.output_writers[:snapshot3d] = JLD2Writer(ocean.model, output_fields;
+    schedule = TimeInterval(24hours), overwrite_existing = true, filename = out("snapshot3d"))  # 24hours, not 1day: Oceananigans.Units and Dates both export `day`
+
 simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
     schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
 simulation.output_writers[:checkpointer] = Checkpointer(ocean.model;
