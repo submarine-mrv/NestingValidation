@@ -451,12 +451,18 @@ const eos = SWP.TEOS10.TEOS10EquationOfState()
 # Literature check for the thermocline layer, our sign convention (+ = into the domain): the Canary
 # Current flows SOUTHWARD, so expect north > 0 (inflow) and south < 0 (outflow), a few Sv each, weaker
 # in January than July. Hernández-Guerra 2005 give 4.7 ± 0.8 Sv southward north of the islands.
-# Thresholds: 27.38 keeps the literature's thermocline number, but the deep bound does NOT -- σθ in
-# this domain maxes at 27.798 (coldest/saltiest corner T=1.97 S=34.944), so a γⁿ=27.922 threshold is
-# unreachable and the deep bin would always read zero. 27.70 is NADW here (T≈4.7 S≈35.15) and splits
-# the sub-thermocline water where this domain actually has a boundary.
-const σ_THERMOCLINE  = 27.38
-const σ_INTERMEDIATE = 27.70
+# Thresholds match the DEPTH the literature's layers occupy, not their γⁿ numbers -- σθ ≠ γⁿ, so
+# copying the numbers copies the label and not the layer. Measured in the January run: σθ=27.38 sits
+# at 1195 m against the literature's ~700 m thermocline base, while σθ=27.10 sits at ~500 m. The
+# 27.38 bin therefore straddled TWO OPPOSING CURRENTS -- the Canary Current above ~500 m (north
+# inflow) and the poleward undercurrent at 700-1500 m (north outflow) -- and as the undercurrent spun
+# up it flipped the sum from +8.5 to -0.5 Sv, which looked like the model losing the Canary Current
+# when it was the diagnostic mixing two signals. Offline re-binning of the saved sections found it.
+#
+# The deep bound also cannot use the literature's number: σθ maxes at 27.798 in this domain (coldest,
+# saltiest corner T=1.97 S=34.944), so γⁿ=27.922 is unreachable and that bin would always read zero.
+const σ_THERMOCLINE  = 27.10     # ≈ 500 m here; the Canary Current layer
+const σ_INTERMEDIATE = 27.70     # ≈ 1800 m; NADW
 @inline σθ_of(T, S) = SWP.ρ(T, S, 0.0, eos) - 1000.0
 @inline density_layer(σ) = σ < σ_THERMOCLINE ? 1 : (σ < σ_INTERMEDIATE ? 2 : 3)
 
@@ -571,7 +577,7 @@ function progress(sim)
                    Wr, Sr, Nr, Wr+Sr+Nr)
 
     Q = layered_boundary_transports(model)
-    for (li, lab) in ((1, "thermocline σθ<27.38"), (2, "intermediate  <27.70"), (3, "deep      σθ≥27.70"))
+    for (li, lab) in ((1, "Canary Cur σθ<27.10"), (2, "undercurrent  <27.70"), (3, "deep      σθ≥27.70"))
         @info @sprintf("        %s: west %+7.3f  south %+7.3f  north %+7.3f | net %+7.3f Sv",
                        lab, Q[1,li]/1e6, Q[2,li]/1e6, Q[3,li]/1e6, sum(Q[:,li])/1e6)
     end

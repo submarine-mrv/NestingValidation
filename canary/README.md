@@ -1,7 +1,7 @@
 # Canary upwelling configuration (NW Africa)
 
-Third OBC test domain. **Status: written, geometry and parent data verified, smoke-tested end to end
-at 0.1°. No validation run yet.** Model: `canary_glorys_obc.jl`.
+Third OBC test domain. **Status: validated — stable 7-day JRA55-forced run at 0.02° (2 km),
+38.8 h wall. January only; July not yet run.** Model: `canary_glorys_obc.jl`.
 
 ## Why this domain
 
@@ -211,15 +211,87 @@ static (linear free surface) grid is not small. `CANARY_ZSTAR=0` falls back.
 | `CANARY_JRA_DATASET` | `repeat` | `repeat` or `multiyear` |
 | `CANARY_ZSTAR` / `CANARY_PASSES` / `CANARY_WENO_ORDER` / `CANARY_STOP_DAYS` / `CANARY_TAG` | | as in `red_sea/` |
 
+## Validation — 7-day run at 0.02°, JRA55-forced, January
+
+3620 iterations, **38.8 h wall** at ~40 s/iter, Δt settling at 1.4–4.5 min.
+
+### The no-correction decision holds at 21× the magnitude it was measured
+
+This is what the domain was chosen to test. Mean over t ≥ 4 d:
+
+| | |
+|---|---|
+| GLORYS residual through the three sections | **−3.033e6 m³/s** |
+| model's actual net transport | **+2.5e4 m³/s** |
+| **absorbed by the Flather boundary** | **99.2%** |
+| volume drift | −1.2e-6 |
+| salt drift | +2.7e-6 |
+| mean S | 35.3068 → 35.3069 |
+
+`red_sea/` measured the no-correction conclusion at 1.44e5 m³/s. It extrapolates to **21× that**
+without a correction term and without drift.
+
+### The Canary Current is there — but the first diagnostic hid it
+
+The on-the-fly thermocline transport drifted from **+8.5 Sv (north inflow) at day 0.5 to −0.5 Sv
+(outflow) at day 7**, which read as the model losing the Canary Current. It was not. Re-binning the
+saved boundary sections offline into finer density bands (mean over t ≥ 4 d, Sv, + = into the domain):
+
+| band | mean depth | west | south | north |
+|---|---|---|---|---|
+| σθ<26.5 | ~70–110 m | −0.81 | +0.21 | −0.09 |
+| 26.5–26.85 | ~210–330 m | −1.01 | +0.51 | **+1.28** |
+| 26.85–27.1 | ~420–520 m | −1.11 | +0.52 | **+4.58** |
+| 27.1–27.38 | ~780–840 m | −2.10 | **+4.38** | **−4.78** |
+| 27.38–27.70 | ~1250–1470 m | +0.28 | **+5.27** | **−2.60** |
+| σθ>27.70 | ~2800–3200 m | −1.29 | −2.78 | −0.41 |
+
+Two opposing currents sat inside the single σθ<27.38 bin:
+
+- **Above ~500 m: north inflow totalling +5.8 Sv** — the Canary Current, southward through the
+  domain. Compares well with Hernández-Guerra's **4.7 ± 0.8 Sv** north of the islands, allowing for
+  the layer sitting deeper than theirs.
+- **700–1500 m: north outflow, south inflow, ~4–5 Sv** — a **poleward undercurrent**, flowing the
+  opposite way. A real feature of this eastern boundary (*The Canary Intermediate Poleward
+  Undercurrent*, JPO 2021), and visible in the cross-shore section as a northward band hugging the
+  African slope.
+
+As the undercurrent spun up over the run it overwhelmed the surface signal and flipped the sum's sign.
+**The bin has since been retuned to σθ < 27.10 (~500 m)** — matching the *depth* the literature's
+γⁿ < 27.38 layer occupies rather than its numerical label, since σθ ≠ γⁿ.
+
+This is what the saved boundary sections bought: the diagnosis needed re-binning, and re-binning from
+file cost minutes where re-running would have cost 39 hours.
+
+### Upwelling: present, unchanged, and weakly tested
+
+`ΔT` (coastal minus offshore SST) went **−2.260 → −2.289 °C**, mean −2.268 over t ≥ 4 d. The model
+neither sharpened nor destroyed the gradient GLORYS supplied. Temperature at the 109 m source depth
+over the shelf held at 17.53 °C. **January is the weak season here** — this is a null result on the
+domain's headline signal, and the July run is the real test.
+
+![cross-shore section](canary_section_day7.png)
+
+### Open after this run
+
+- **The undercurrent at 4–5 Sv looks large** for an eastern boundary undercurrent (typically O(1 Sv)).
+  No literature value was found to check it against.
+- **~4 Sv of apparent transfer from upper to deeper layers** in the mean, too large to be real
+  diapycnal flux. Most likely isopycnal heave changing layer volumes, since the binning is
+  instantaneous — not verified.
+- **The thermocline circulation was still drifting at day 7**, so 7 days does not settle this domain's
+  transports any more than it settled the Red Sea's strait.
+
 ## Status and what is untested
 
 Smoke-tested end to end at 0.1°: all three boundaries carry transport, z\*, JRA55, the conservation
 and stability monitors, the upwelling index and the output writers all engage. Drift ~1e-6 over the
 test. Not yet established:
 
-- **No validation run at any resolution.** Everything above is a 0.1° mechanical smoke test.
-- **The 5 Sv GLORYS residual is untested against the no-correction decision** (see above). This is the
-  first thing a real run should be judged on.
+- ~~No validation run.~~ **Done** — 7 days at 0.02°, stable, 38.8 h.
+- ~~The GLORYS residual is untested against the no-correction decision.~~ **Done** — 99.2% absorbed.
+- **July is not run.** January is the weak-upwelling season and the ΔT result is null; the domain's
+  headline signal is untested.
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
   Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
   strong case, and the domain's own signal will be clearer there.
