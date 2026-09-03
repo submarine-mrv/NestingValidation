@@ -400,28 +400,57 @@ function glorys_residuals(t)
 end
 
 # THE signal for this domain. Upwelling is offshore Ekman transport drawing cold water up against the
-# African coast, so the diagnostic is the cross-shore SST contrast in the eastern shelf strip against
-# the open ocean at the same latitude, plus the mean temperature at the upwelling source depth.
+# African coast, so the diagnostic is the cross-shore SST contrast: coastal minus offshore at MATCHED
+# latitude, plus the temperature at the ~100 m source depth over the shelf.
+#
+# The coast runs diagonally -- λ = -14.87 at 25N to -10.23 at 29.4N -- so a fixed-longitude strip
+# cannot follow it. The first version used λ > -13.5 and sampled 0 wet cells at 25-26N and 7 at
+# 26-27N, missing Cape Bojador (~26N) entirely, i.e. one of the two upwelling centres in the domain.
+# `upwelling_index` therefore walks in from the coast ROW BY ROW. `upwelling_index_fixedλ` keeps the
+# original definition so July stays comparable with the January run, which used it.
 const k_src = argmin(abs.(z_centers .+ 100))     # ~100 m, the source depth for coastal upwelling
+# Bands are defined in DEGREES and converted to cells, not fixed cell counts: a hard-coded 150-cell
+# offshore offset silently exceeded the grid width at 0.1° and returned NaN for every row.
+const N_COAST     = max(1, round(Int, 0.50 / Δdeg))   # ~50 km inshore band
+const N_OFFSHORE  = round(Int, 3.00 / Δdeg)           # reference centred ~300 km offshore
+const N_OFF_HALF  = max(1, round(Int, 0.25 / Δdeg))   # ~25 km half-width on that reference
+# Easternmost wet surface cell per row = the coast. NaN where the row has no water.
+const i_coast = [findlast(i -> wet3d[i, j, Nz], 1:Nx) for j in 1:Ny]
+
 function upwelling_index(model)
     T = model.tracers.T
-    coastalT = offshoreT = 0.0; nc = no = 0
-    srcT = 0.0; ns = 0
+    cT = oT = sT = 0.0; nc = no = ns = 0
+    @inbounds for j in 1:Ny
+        ic = i_coast[j]
+        ic === nothing && continue
+        for i in max(1, ic-N_COAST+1):ic
+            wet3d[i, j, Nz] || continue
+            cT += T[i, j, Nz]; nc += 1
+            if wet3d[i, j, k_src]; sT += T[i, j, k_src]; ns += 1; end
+        end
+        lo, hi = ic - N_OFFSHORE - N_OFF_HALF, ic - N_OFFSHORE + N_OFF_HALF
+        lo < 1 && continue
+        for i in lo:hi
+            wet3d[i, j, Nz] || continue
+            oT += T[i, j, Nz]; no += 1
+        end
+    end
+    Tc = nc > 0 ? cT/nc : NaN
+    To = no > 0 ? oT/no : NaN
+    return Tc, To, Tc - To, ns > 0 ? sT/ns : NaN
+end
+
+# Original fixed-longitude definition, kept only so the January run stays comparable.
+function upwelling_index_fixedλ(model)
+    T = model.tracers.T
+    cT = oT = 0.0; nc = no = 0
     @inbounds for j in 1:Ny, i in 1:Nx
         wet3d[i, j, Nz] || continue
         λi = λ_centers[i]
-        if λi > -13.5                       # shelf strip against the coast
-            coastalT += T[i, j, Nz]; nc += 1
-        elseif -20.5 < λi < -19.0           # open-ocean reference, clear of the islands
-            offshoreT += T[i, j, Nz]; no += 1
-        end
-        if λi > -13.5 && wet3d[i, j, k_src]
-            srcT += T[i, j, k_src]; ns += 1
-        end
+        if λi > -13.5;              cT += T[i, j, Nz]; nc += 1
+        elseif -20.5 < λi < -19.0;  oT += T[i, j, Nz]; no += 1 end
     end
-    Tc = nc > 0 ? coastalT/nc : NaN
-    To = no > 0 ? offshoreT/no : NaN
-    return Tc, To, Tc - To, ns > 0 ? srcT/ns : NaN
+    return (nc > 0 ? cT/nc : NaN) - (no > 0 ? oT/no : NaN)
 end
 
 # --- Conservation and stability monitors --------------------------------------
@@ -583,8 +612,8 @@ function progress(sim)
     end
 
     Tc, To, ΔT, Ts = upwelling_index(model)
-    @info @sprintf("        UPWELLING: SST coastal %.3f  offshore %.3f  ΔT %+.3f °C | T at %.0f m over shelf %.3f °C",
-                   Tc, To, ΔT, z_centers[k_src], Ts)
+    @info @sprintf("        UPWELLING: SST coastal %.3f  offshore %.3f  ΔT %+.3f °C | T at %.0f m over shelf %.3f °C | ΔT(fixed-λ, Jan-comparable) %+.3f",
+                   Tc, To, ΔT, z_centers[k_src], Ts, upwelling_index_fixedλ(model))
 
     SV, V = salt_and_volume(model)
     ninv, worstΔρ = static_instability(model)

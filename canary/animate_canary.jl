@@ -41,7 +41,10 @@ for (row, (data, lab, cmap, rng)) in enumerate((
         (@lift(spd($n)),     "surface speed (m/s) — island wakes and filaments",               :speed,   (0, vq)),
         (@lift(sfc(Ss, $n)), "surface S (psu)",                                                :haline,  Sq)))
     ax = Axis(fig[row, 1]; title = lab, titlesize = 14, xlabel = "λ", ylabel = "φ", aspect = DataAspect())
-    hm = heatmap!(ax, λ, φ, data; colormap = cmap, colorrange = rng, nan_color = :gray70, highclip = :white)
+    # No highclip: Makie then clamps out-of-range values to the colormap's end colours. An explicit
+    # highclip (white here, before) reads as missing data rather than "off the top of the scale",
+    # which matters because these ranges are percentile-capped and ~1% of cells sit above them.
+    hm = heatmap!(ax, λ, φ, data; colormap = cmap, colorrange = rng, nan_color = :gray70)
     Colorbar(fig[row, 2], hm; width = 12)
 end
 colgap!(fig.layout, 6)
