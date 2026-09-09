@@ -1,7 +1,8 @@
 # Canary upwelling configuration (NW Africa)
 
-Third OBC test domain. **Status: validated — stable 7-day JRA55-forced run at 0.02° (2 km),
-38.8 h wall. January only; July not yet run.** Model: `canary_glorys_obc.jl`.
+Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA55-forced
+runs at 0.02° (2 km), January (38.8 h) and July (36.3 h). Passive-tracer release implemented and
+verified but not yet used in a production run.** Model: `canary_glorys_obc.jl`.
 
 ## Why this domain
 
@@ -282,6 +283,100 @@ domain's headline signal, and the July run is the real test.
 - **The thermocline circulation was still drifting at day 7**, so 7 days does not settle this domain's
   transports any more than it settled the Red Sea's strait.
 
+## July vs January — the upwelling signal
+
+Same configuration, same resolution, 7 days each. `CANARY_START=1993-07-01`, 3030 iterations,
+**36.3 h wall**.
+
+### The headline: the child sharpens the gradient in the strong season
+
+Coast-following index, both recomputed **offline on the same definition** so the comparison is
+like-for-like (January ran before the index was fixed):
+
+| | day 0.25 | day 7 | change over the run | mean t ≥ 4 d |
+|---|---|---|---|---|
+| January | −1.233 | −1.246 | **−0.013 °C** | −1.227 |
+| **July** | −1.997 | −2.197 | **−0.200 °C** | −2.204 |
+
+July's contrast is **~1.8× stronger in absolute terms and sharpens 15× more** over the run. In the
+weak season the model essentially holds what GLORYS supplied; in the strong season it actively deepens
+the gradient. That is the 2 km child doing work the 9 km parent cannot — the question this domain was
+built to ask.
+
+> **Two earlier readings in this file were wrong and are corrected here.** July's initial contrast was
+> reported as *weaker* than January's (−1.72 vs −2.26); that came from the broken fixed-longitude index
+> which sampled only the northern coast. On the corrected index July is stronger from the start, the
+> opposite conclusion. And a mid-run estimate of "10× more sharpening" is 15× on the coast-following
+> index (5× on the old one) — the direction held, the number moved.
+
+### Canary Current
+
+| σθ < 27.10 | north | south | west |
+|---|---|---|---|
+| January (offline re-bin) | +5.77 | +1.24 | −2.94 |
+| **July** | **+4.94** | **−2.91** | −1.70 |
+
+July shows the proper through-flow — in at the north, out at the south — and the **−2.91 Sv south
+outflow sits inside the literature's summer estimate of −2.5 ± 1.4 Sv**. January's south limb is
+*inflow*, which does not match the winter estimate of −0.8 ± 1.1 Sv, though that error bar spans zero.
+
+### Boundary absorption holds in both seasons
+
+| | GLORYS residual | model net | absorbed |
+|---|---|---|---|
+| January | −3.03e6 m³/s | +2.5e4 | 99.2% |
+| **July** | **−3.56e6** | **+8.8e3** | **99.75%** |
+
+The `red_sea/` no-correction decision, measured at 1.44e5 m³/s, now holds across two seasons at
+~21–25× that magnitude.
+
+### Other seasonal differences
+
+| | January | July |
+|---|---|---|
+| evaporation | −0.92 m/yr | **−1.97 m/yr** |
+| mean S over the run | flat (35.3068→35.3069) | **rising (35.3148→35.3161)** |
+| worst IC-driven Δρ | 0.205 | **0.392** |
+| max \|ζ/f\| in the surface field | **1.26** | 0.79 |
+
+Summer evaporation concentrates salt, exactly as `red_sea/` showed. Note the vorticity extreme runs the
+*other* way: January reaches higher |ζ/f| offshore, while July's vorticity is weaker but concentrated
+in a narrow coastal strip along the upwelling front — visible in the animations.
+
+![July surface](canary_surface_day7_zstar_jraryf_jul.png)
+
+## Passive tracer release (implemented, not yet run in production)
+
+`CANARY_TRACER=1` adds a continuous point release for pathway and residence-time work — the kind an
+ocean alkalinity enhancement outfall would represent.
+
+**Two tracers, not one**, following Deleersnijder's age formulation:
+
+```
+∂c/∂t  + ∇·(uc)  = S     concentration; S is the release
+∂ac/∂t + ∇·(uac) = c     age concentration
+```
+
+so **mean age = ac/c**. A single "ideal age" tracer cannot do this for a point source: it measures time
+since surface contact, not time since release.
+
+| | |
+|---|---|
+| default site | Las Palmas, **−15.38°E, 28.16°N** — wet, 535 m, 47 of 49 neighbouring cells wet, the island's main port |
+| release volume | 1.92e9 m³ (5 km radius, top 20 m) |
+| source | normalised to **∫S dV = 1 unit/s**, so cumulative input equals elapsed seconds |
+| boundaries | **zero-value at all three open edges** — the default no-flux would trap tracer and make residence time meaningless |
+
+That normalisation makes the budget checkable by inspection rather than by trusting the advection
+scheme. Verified on CPU: **inventory 99.97% of released**, with export at ~1e-25 (nothing had reached a
+boundary yet), tracer confined to the release cell, and the age tracer accumulating correctly.
+
+**This needs a much longer run than 7 days.** Residence time in this region is weeks to months, which
+at ~39 s/iter is days of wall clock — a GPU run. The release forcing is a continuous-form pure function
+of `(x,y,z,t)` specifically so it runs unchanged on GPU, but **the diagnostics are not GPU-ready**: they
+index model fields directly, which GPU disallows. That refactor (CPU field copies plus a CPU grid for
+the metric operators) is the remaining blocker.
+
 ## Status and what is untested
 
 Smoke-tested end to end at 0.1°: all three boundaries carry transport, z\*, JRA55, the conservation
@@ -290,8 +385,11 @@ test. Not yet established:
 
 - ~~No validation run.~~ **Done** — 7 days at 0.02°, stable, 38.8 h.
 - ~~The GLORYS residual is untested against the no-correction decision.~~ **Done** — 99.2% absorbed.
-- **July is not run.** January is the weak-upwelling season and the ΔT result is null; the domain's
-  headline signal is untested.
+- ~~July is not run.~~ **Done** — the domain's headline signal is confirmed: 15× more sharpening than
+  January.
+- **The tracer release has not been run in production**, only verified. It needs a GPU run of weeks to
+  months to answer the residence-time question.
+- **The diagnostics are not GPU-ready** — scalar indexing into model fields. This blocks the long run.
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
   Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
   strong case, and the domain's own signal will be clearer there.

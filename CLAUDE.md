@@ -7,7 +7,8 @@ parent product.
 - `red_sea/` — Red Sea + Gulf of Aden, GLORYS-forced, optional JRA55 atmosphere. Validated both ways:
   stable 7-day runs at 5.2 km (17.5 h unforced, 22.9 h forced). Strait transports not yet converged.
 - `canary/` — Canary upwelling, NW Africa. Three open boundaries, wind-driven interior, islands
-  inside the domain. Validated: stable 7-day JRA55-forced run at 2 km (38.8 h), January. July untested.
+  inside the domain. Validated in both seasons at 2 km (January 38.8 h, July 36.3 h). Passive-tracer
+  release implemented and verified; needs a GPU run, and the diagnostics are not yet GPU-ready.
 
 ## Working agreements
 

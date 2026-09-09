@@ -93,6 +93,26 @@ glorys_region = DW.BoundingBox(longitude = (-22.0, -9.5), latitude = (24.5, 30.0
 @assert λ₁ >= -22.0 && λ₂ <= -9.5 && φ₁ >= 24.5 && φ₂ <= 30.0 "domain outside glorys_region"
 glorys = DW.GLORYSDaily()
 
+# --- Passive tracer release (optional) ----------------------------------------
+# For pathway and residence-time work: a continuous release at a point on Gran Canaria, of the kind
+# an ocean alkalinity enhancement outfall would represent.
+#
+# TWO tracers, following Deleersnijder et al.'s age formulation:
+#   c  -- concentration.      ∂c/∂t  + ∇·(uc)  = S      with S the release
+#   ac -- age concentration.  ∂ac/∂t + ∇·(uac) = c      (grows at rate c wherever tracer is present)
+# so the MEAN AGE of the water carrying the tracer is ac/c. A single "ideal age" tracer cannot do
+# this for a point source -- it measures time since surface contact, not time since release.
+#
+# S is normalised to ∫S dV = 1 unit/s over the release volume, which makes the budget checkable by
+# inspection: total inventory should equal elapsed seconds minus whatever has left through the open
+# boundaries. Default site is Las Palmas (-15.38, 28.16): wet, 535 m, 47 of 49 neighbouring cells wet,
+# and the island's main port.
+use_tracer  = get(ENV, "CANARY_TRACER", "0") == "1"
+λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",   "-15.38"))
+φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",    "28.16"))
+R_release   = parse(Float64, get(ENV, "CANARY_RELEASE_R",       "0.05"))   # degrees, ~5 km
+D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "20.0"))    # metres below surface
+
 # --- Boundary conditions ------------------------------------------------------
 using Oceananigans.BoundaryConditions: NormalRadiation,
                                        GravityWaveRadiationBoundaryCondition,
@@ -253,18 +273,69 @@ S_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(S_west_exterior; 
                                 south = ValueBoundaryCondition(S_south_exterior; scheme = radiation, discrete_form = true),
                                 north = ValueBoundaryCondition(S_north_exterior; scheme = radiation, discrete_form = true))
 
+# --- Tracer release forcing and boundaries ------------------------------------
+# Release volume is measured on the grid so the source can be normalised; a continuous-form forcing
+# (a pure function of x, y, z, t) is used rather than a masked array so the same code runs on GPU.
+# In a function, not a top-level loop: accumulating into a global from inside `for` hits Julia's
+# soft-scope rule and fails with UndefVarError.
+function compute_release_volume()
+    λc = λnodes(grid, Center(), Center(), Center())
+    φc = φnodes(grid, Center(), Center(), Center())
+    zc = znodes(grid, Center(), Center(), Center())
+    V = 0.0
+    for k in 1:Nz, j in 1:Ny, i in 1:Nx
+        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
+        dx = (λc[i] - λ_release) * cosd(φ_release)
+        dy = φc[j] - φ_release
+        (dx*dx + dy*dy < R_release^2 && zc[k] > -D_release) || continue
+        V += Vᶜᶜᶜ(i, j, k, grid)
+    end
+    return V
+end
+
+release_volume = use_tracer ? compute_release_volume() : 0.0
+if use_tracer
+    release_volume <= 0 ?
+        @warn("Release site ($(λ_release), $(φ_release)) contains NO wet cells -- tracer will never enter the domain") :
+        @info @sprintf("Tracer release at %.3fE %.3fN, r=%.3f deg, top %.0f m: volume %.4e m³",
+                       λ_release, φ_release, R_release, D_release, release_volume)
+end
+
+const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV = 1 unit/s
+
+@inline function c_source(x, y, z, t)
+    dx = (x - λ_release) * cosd(φ_release)
+    dy = y - φ_release
+    inside = (dx*dx + dy*dy < R_release^2) & (z > -D_release)
+    return ifelse(inside, RELEASE_RATE, zero(x))
+end
+@inline age_source(x, y, z, t, c) = c        # ∂ac/∂t = c, so ac/c is the mean age
+
+# Zero exterior at every open boundary: there is no released tracer outside the domain, so this lets
+# it leave freely. A default no-flux condition would trap it and make residence time meaningless.
+@inline zero_west(j, k, grid, clock, fields)  = zero(grid)
+@inline zero_ns(i, k, grid, clock, fields)    = zero(grid)
+tracer_bcs() = FieldBoundaryConditions(
+    west  = ValueBoundaryCondition(zero_west; scheme = radiation, discrete_form = true),
+    south = ValueBoundaryCondition(zero_ns;   scheme = radiation, discrete_form = true),
+    north = ValueBoundaryCondition(zero_ns;   scheme = radiation, discrete_form = true))
+
+tracer_names   = use_tracer ? (:T, :S, :c, :ac) : (:T, :S)
+tracer_forcing = use_tracer ? (; c = Forcing(c_source), ac = Forcing(age_source, field_dependencies = :c)) : (;)
+tracer_bc_pair = use_tracer ? (; c = tracer_bcs(), ac = tracer_bcs()) : (;)
+
 # --- Ocean simulation ---------------------------------------------------------
 weno_order = parse(Int, get(ENV, "CANARY_WENO_ORDER", "7"))
 tracer_advection = WENO(order = weno_order,
                         time_discretization = AdaptiveVerticallyImplicitDiscretization(cfl = 0.5))
 
 ocean = ocean_simulation(grid;
-                         tracers = (:T, :S),
+                         tracers = tracer_names,
                          tracer_advection,
-                         forcing = (T = T_restoring, S = S_restoring,
-                                    u = u_restoring, v = v_restoring),
-                         boundary_conditions = (; u = u_bcs, U = U_bcs, v = v_bcs, V = V_bcs,
-                                                  η = η_bcs, T = T_bcs, S = S_bcs))
+                         forcing = merge((T = T_restoring, S = S_restoring,
+                                          u = u_restoring, v = v_restoring), tracer_forcing),
+                         boundary_conditions = merge((; u = u_bcs, U = U_bcs, v = v_bcs, V = V_bcs,
+                                                        η = η_bcs, T = T_bcs, S = S_bcs), tracer_bc_pair))
 
 # --- Atmospheric forcing ------------------------------------------------------
 # The point of this domain, not a correction to it: upwelling is wind-driven, so CANARY_ATMOS=none
@@ -453,6 +524,42 @@ function upwelling_index_fixedλ(model)
     return (nc > 0 ? cT/nc : NaN) - (no > 0 ? oT/no : NaN)
 end
 
+# --- Tracer budget ------------------------------------------------------------
+# The source is normalised to 1 unit/s, so cumulative input is exactly the elapsed time in seconds:
+#   inventory + cumulative export == t
+# which makes the budget checkable by inspection rather than by trusting the advection scheme.
+# Mean age is ac/c over the whole tracer-bearing volume (Deleersnijder); it is only meaningful once
+# there is tracer to speak of, so it is reported as NaN until the inventory is non-trivial.
+function tracer_budget(model)
+    c, ac = model.tracers.c, model.tracers.ac
+    C = 0.0; AC = 0.0; cmax = -Inf; imax = CartesianIndex(1, 1, 1)
+    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
+        v = Vᶜᶜᶜ(i, j, k, grid)
+        C += v * c[i, j, k]; AC += v * ac[i, j, k]
+        if c[i, j, k] > cmax; cmax = c[i, j, k]; imax = CartesianIndex(i, j, k); end
+    end
+    return C, AC, cmax, imax
+end
+
+# Advective tracer flux through each open edge; + = into the domain, so a negative sum is export.
+function tracer_export(model)
+    c = model.tracers.c
+    u, v = model.velocities.u, model.velocities.v
+    W = 0.0; So = 0.0; N = 0.0
+    @inbounds for k in 1:Nz, j in 1:Ny
+        wetcell(1, j, k, grid, Face(), Center(), Center()) &&
+            (W += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid) * c[1, j, k])
+    end
+    @inbounds for k in 1:Nz, i in 1:Nx
+        wetcell(i, 1, k, grid, Center(), Face(), Center()) &&
+            (So += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid) * c[i, 1, k])
+        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) &&
+            (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid) * c[i, Ny, k])
+    end
+    return W, So, N
+end
+
 # --- Conservation and stability monitors --------------------------------------
 function salt_and_volume(model)
     S = model.tracers.S
@@ -614,6 +721,18 @@ function progress(sim)
     Tc, To, ΔT, Ts = upwelling_index(model)
     @info @sprintf("        UPWELLING: SST coastal %.3f  offshore %.3f  ΔT %+.3f °C | T at %.0f m over shelf %.3f °C | ΔT(fixed-λ, Jan-comparable) %+.3f",
                    Tc, To, ΔT, z_centers[k_src], Ts, upwelling_index_fixedλ(model))
+
+    if use_tracer
+        C, AC, cmax, imax = tracer_budget(model)
+        Wt, St, Nt = tracer_export(model)
+        elapsed = max(time(sim), eps())
+        @info @sprintf("        TRACER: inventory %.4e of %.4e released (%.2f%%) | mean age %s | max c %.3e %s",
+                       C, elapsed, 100C/elapsed,
+                       C > 1e-6*elapsed ? @sprintf("%.3f d", AC/C/86400) : "n/a (too little tracer)",
+                       cmax, whereis(imax))
+        @info @sprintf("        TRACER export (+ = in): west %+.3e  south %+.3e  north %+.3e | net %+.3e /s",
+                       Wt, St, Nt, Wt+St+Nt)
+    end
 
     SV, V = salt_and_volume(model)
     ninv, worstΔρ = static_instability(model)
