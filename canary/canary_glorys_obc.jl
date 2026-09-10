@@ -14,6 +14,7 @@
 
 using CairoMakie
 using Oceananigans
+using Oceananigans.Architectures: on_architecture
 using NumericalEarth
 using CopernicusMarine
 using Oceananigans.Advection: cell_advection_timescale
@@ -26,7 +27,12 @@ using Statistics
 const DW  = NumericalEarth.DataWrangling
 const SWP = Oceananigans.BuoyancyFormulations.SeawaterPolynomials
 
-arch = CPU()
+# CANARY_ARCH=GPU for the long tracer runs. Everything below is written so the same script runs on
+# either: the boundary conditions and the tracer forcing are device kernels already, and every
+# DIAGNOSTIC operates on CPU copies (see grid_c / arr below) because GPU disallows the scalar indexing
+# they all use.
+arch = get(ENV, "CANARY_ARCH", "CPU") == "GPU" ? GPU() : CPU()
+@info "Architecture: $(typeof(arch).name.name)"
 
 # --- Run window ---------------------------------------------------------------
 # January, matching salish_sea/ and red_sea/ so the three domains share a window. Note the cost:
@@ -87,6 +93,27 @@ bottom_height = regrid_bathymetry(underlying_grid;
                                   minimum_depth = 10,
                                   interpolation_passes = interpolation_passes)
 grid = ImmersedBoundaryGrid(underlying_grid, GridFittedBottom(bottom_height))
+
+# CPU mirror. The diagnostics all walk the grid cell by cell, and the metric operators (Vᶜᶜᶜ, Axᶠᶜᶜ,
+# Azᶜᶜᶜ …) read the grid's own coordinate arrays, so BOTH the fields and the grid must be on CPU for
+# them. On a CPU run this is the same grid and `arr` is a plain copy.
+const grid_c = on_architecture(CPU(), grid)
+@inline arr(f) = Array(interior(f))
+
+# On CPU the mirror SHARES the z* state arrays (σ, η, ∂t_σ), so its metrics track the live grid for
+# free. On GPU it is a genuine copy, and without this every diagnostic would silently use FROZEN
+# metrics -- including salt_and_volume, which exists to measure z* drift and would then read ~0 no
+# matter what z* did. Called once per progress block; a no-op on CPU.
+const _ZSTAR_FIELDS = (:ηⁿ, :σᶜᶜⁿ, :σᶠᶜⁿ, :σᶜᶠⁿ, :σᶠᶠⁿ, :σᶜᶜ⁻, :∂t_σ)
+function sync_grid_c!()
+    (arch isa CPU || !(grid.underlying_grid.z isa MutableVerticalDiscretization)) && return nothing
+    zg, zc = grid.underlying_grid.z, grid_c.underlying_grid.z
+    for f in _ZSTAR_FIELDS
+        hasfield(typeof(zg), f) || continue
+        copyto!(parent(getfield(zc, f)), Array(parent(getfield(zg, f))))
+    end
+    return nothing
+end
 
 # Fixed subset so resolution changes do not invalidate the download cache.
 glorys_region = DW.BoundingBox(longitude = (-22.0, -9.5), latitude = (24.5, 30.0))
@@ -166,7 +193,13 @@ function fill_down!(a::AbstractArray{<:Any,3}, floor_value)
     end
     return a
 end
-fill_down_fts!(fts, floor) = (for n in 1:length(fts.times); fill_down!(interior(fts[n]), floor); end; fts)
+# via a host copy: fill_down! walks the array cell by cell, which a device array will not allow.
+function fill_down_fts!(fts, floor)
+    for n in 1:length(fts.times)
+        a = Array(interior(fts[n])); fill_down!(a, floor); copyto!(interior(fts[n]), a)
+    end
+    return fts
+end
 
 n_times = length(boundary_dates)
 restoring_kw = (; rate = restoring_rate, mask = boundary_mask, inpainting = bc_inpainting,
@@ -284,11 +317,11 @@ function compute_release_volume()
     zc = znodes(grid, Center(), Center(), Center())
     V = 0.0
     for k in 1:Nz, j in 1:Ny, i in 1:Nx
-        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
+        wetcell(i, j, k, grid_c, Center(), Center(), Center()) || continue
         dx = (λc[i] - λ_release) * cosd(φ_release)
         dy = φc[j] - φ_release
         (dx*dx + dy*dy < R_release^2 && zc[k] > -D_release) || continue
-        V += Vᶜᶜᶜ(i, j, k, grid)
+        V += Vᶜᶜᶜ(i, j, k, grid_c)
     end
     return V
 end
@@ -362,28 +395,45 @@ end
 # --- Initial conditions -------------------------------------------------------
 # Sampled from the SAME repaired series the nudging and boundaries use, so IC and forcing agree by
 # construction; the alternative re-reads the cache and never sees the repair.
-function ic_from_fts!(field, fts, native_grid, t)
-    a = interior(field)
+#
+# On GPU the restoring series live on the device and this samples them point by point, which the
+# device disallows -- so CPU copies are loaded for the purpose, with the same fill_down! repair. They
+# are only needed at setup and cost a few tens of MB. On CPU the existing series are reused.
+function cpu_parent(var, floor_value)
+    f = FieldTimeSeries(restoring_meta(var), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
+    fill_down_fts!(f, floor_value)
+    return f
+end
+T_fts_c = arch isa CPU ? T_fts : cpu_parent(:temperature, 1.0)
+S_fts_c = arch isa CPU ? S_fts : cpu_parent(:salinity,    5.0)
+
+function ic_array(fts, native_grid, t)
+    a = zeros(eltype(interior(fts[1])), Nx, Ny, Nz)
     @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
-        a[i, j, k] = DW.interpolate_to_grid(fts, i, j, k, native_grid, grid, t)
+        a[i, j, k] = DW.interpolate_to_grid(fts, i, j, k, native_grid, grid_c, t)
     end
-    return field
+    return a
 end
 
-T_ic = CenterField(grid); ic_from_fts!(T_ic, T_fts, T_native, Time(0.0))
-S_ic = CenterField(grid); ic_from_fts!(S_ic, S_fts, S_native, Time(0.0))
-interior(ocean.model.tracers.T) .= interior(T_ic)
-interior(ocean.model.tracers.S) .= interior(S_ic)
+set!(ocean.model.tracers.T, ic_array(T_fts_c, T_fts_c.grid, Time(0.0)))
+set!(ocean.model.tracers.S, ic_array(S_fts_c, S_fts_c.grid, Time(0.0)))
 
 free_surface_field(fs) = hasproperty(fs, :η) ? fs.η : fs.displacement
 η_field = free_surface_field(ocean.model.free_surface)
-let ηi = interior(η_field), t₀ = Time(0.0)
-    for i in 1:Nx, j in 1:Ny
-        wet = !immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center())
-        ηi[i, j, 1] = ifelse(wet, zos_at(i, j, grid, t₀), 0.0)
+# zos_fts itself must stay on the device -- the Flather closures sample it there. Building η samples
+# it point by point on the host instead, so that needs a host copy.
+zos_fts_c = arch isa CPU ? zos_fts :
+    FieldTimeSeries(zos_meta, CPU(); time_indices_in_memory = n_times,
+                    time_indexing = Oceananigans.OutputReaders.Cyclical(), inpainting = bc_inpainting)
+let t₀ = Time(0.0)
+    ηa = zeros(Nx, Ny, 1)
+    for j in 1:Ny, i in 1:Nx
+        wet = !immersed_inactive_node(i, j, Nz, grid_c, Center(), Center(), Center())
+        ηa[i, j, 1] = ifelse(wet, DW.interpolate_to_grid(zos_fts_c, i, j, 1, zos_fts_c.grid, grid_c, t₀), 0.0)
     end
+    set!(η_field, ηa)
 end
-@info @sprintf("η from GLORYS zos: [%.4f, %.4f] m", minimum(interior(η_field)), maximum(interior(η_field)))
+@info @sprintf("η from GLORYS zos: [%.4f, %.4f] m", minimum(arr(η_field)), maximum(arr(η_field)))
 
 if use_atmos
     coupled_model = NumericalEarth.OceanOnlyModel(ocean; atmosphere, radiation = radiation_component)
@@ -401,11 +451,11 @@ z_centers = znodes(grid, Center(), Center(), Center())
 @info @sprintf("Δz near surface: %s m (top of %d levels, domain %.0f m)",
                join((@sprintf("%.1f", d) for d in reverse(diff(z_centers))[1:min(6, Nz-1)]), ", "), Nz, depth)
 
-wet3d = [!immersed_inactive_node(i, j, k, grid, Center(), Center(), Center()) for i in 1:Nx, j in 1:Ny, k in 1:Nz]
+wet3d = [!immersed_inactive_node(i, j, k, grid_c, Center(), Center(), Center()) for i in 1:Nx, j in 1:Ny, k in 1:Nz]
 wet_idx = findall(wet3d)
 @info "Wet cells: $(length(wet_idx)) of $(Nx*Ny*Nz) ($(round(100*length(wet_idx)/(Nx*Ny*Nz), digits=1))%)"
-wet_surface_area = sum(Azᶜᶜᶜ(i, j, Nz, grid) for i in 1:Nx, j in 1:Ny
-                       if !immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()); init = 0.0)
+wet_surface_area = sum(Azᶜᶜᶜ(i, j, Nz, grid_c) for i in 1:Nx, j in 1:Ny
+                       if !immersed_inactive_node(i, j, Nz, grid_c, Center(), Center(), Center()); init = 0.0)
 
 # Islands: the topography this domain exists to resolve. Over-smoothing dissolves them silently, so
 # report the land-cell count in a 0.4 deg box around each before trusting a run.
@@ -418,8 +468,8 @@ for (nm, il, ip) in (("La Palma", -17.87, 28.68), ("El Hierro", -18.01, 27.74), 
               @info @sprintf("  island %-14s %3d land of %3d cells", nm, nl, length(box))
 end
 
-function wet_extrema(field)
-    a = interior(field)[wet_idx]
+function wet_extrema(a3)          # a3 is a CPU array, not a Field
+    a = a3[wet_idx]
     nmin, nmax = argmin(a), argmax(a)
     return a[nmin], wet_idx[nmin], a[nmax], wet_idx[nmax]
 end
@@ -437,35 +487,43 @@ function whereis(I)
 end
 
 # Volume transport through each open edge, positive INTO the domain.
-function boundary_transports(model)
-    u, v = model.velocities.u, model.velocities.v
+function boundary_transports(u, v)
     W = S_ = N = 0.0
     @inbounds for k in 1:Nz, j in 1:Ny
-        wetcell(1, j, k, grid, Face(), Center(), Center()) && (W += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid))
+        wetcell(1, j, k, grid_c, Face(), Center(), Center()) && (W += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid_c))
     end
     @inbounds for k in 1:Nz, i in 1:Nx
-        wetcell(i, 1, k, grid, Center(), Face(), Center())  && (S_ += v[i, 1, k]  * Ayᶜᶠᶜ(i, 1, k, grid))
+        wetcell(i, 1, k, grid_c, Center(), Face(), Center())  && (S_ += v[i, 1, k]  * Ayᶜᶠᶜ(i, 1, k, grid_c))
         # Ny+1, not Ny: for Ny cells a y-Face field has Ny+1 points and the north DOMAIN EDGE is the
         # last one. Sampling Ny measures the flux through an interior face instead, which is not the
         # domain's volume budget. (north_V_obc already uses Ny+1.)
-        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) && (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid))
+        wetcell(i, Ny+1, k, grid_c, Center(), Face(), Center()) && (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid_c))
     end
     return W, S_, N
 end
 
 # What the raw GLORYS exterior would carry through each edge: a parent/child mismatch measure, not a
 # physical signal. Reported, never corrected.
+#
+# Computed live, not precomputed. An earlier version evaluated it once at setup and interpolated in
+# time; the parent interpolation is exactly linear so that part was sound, but it also froze the
+# SECTION AREAS at their rest state, and under z* those breathe with the free surface. That shifted
+# the diagnostic by a few tenths of a percent against the validated baseline. Host copies of the
+# parent series keep this off the device without changing what is measured.
+u_fts_c = arch isa CPU ? u_fts : FieldTimeSeries(restoring_meta(:u_velocity), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
+v_fts_c = arch isa CPU ? v_fts : FieldTimeSeries(restoring_meta(:v_velocity), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
+
 function glorys_residuals(t)
     W = S_ = N = 0.0
     @inbounds for k in 1:Nz, j in 1:Ny
-        wetcell(1, j, k, grid, Face(), Center(), Center()) &&
-            (W += DW.interpolate_to_grid(u_fts, 1, j, k, u_native, grid, t) * Axᶠᶜᶜ(1, j, k, grid))
+        wetcell(1, j, k, grid_c, Face(), Center(), Center()) &&
+            (W += DW.interpolate_to_grid(u_fts_c, 1, j, k, u_fts_c.grid, grid_c, t) * Axᶠᶜᶜ(1, j, k, grid_c))
     end
     @inbounds for k in 1:Nz, i in 1:Nx
-        wetcell(i, 1, k, grid, Center(), Face(), Center()) &&
-            (S_ += DW.interpolate_to_grid(v_fts, i, 1, k, v_native, grid, t) * Ayᶜᶠᶜ(i, 1, k, grid))
-        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) &&
-            (N -= DW.interpolate_to_grid(v_fts, i, Ny+1, k, v_native, grid, t) * Ayᶜᶠᶜ(i, Ny+1, k, grid))
+        wetcell(i, 1, k, grid_c, Center(), Face(), Center()) &&
+            (S_ += DW.interpolate_to_grid(v_fts_c, i, 1, k, v_fts_c.grid, grid_c, t) * Ayᶜᶠᶜ(i, 1, k, grid_c))
+        wetcell(i, Ny+1, k, grid_c, Center(), Face(), Center()) &&
+            (N -= DW.interpolate_to_grid(v_fts_c, i, Ny+1, k, v_fts_c.grid, grid_c, t) * Ayᶜᶠᶜ(i, Ny+1, k, grid_c))
     end
     return W, S_, N
 end
@@ -481,15 +539,14 @@ end
 # original definition so July stays comparable with the January run, which used it.
 const k_src = argmin(abs.(z_centers .+ 100))     # ~100 m, the source depth for coastal upwelling
 # Bands are defined in DEGREES and converted to cells, not fixed cell counts: a hard-coded 150-cell
-# offshore offset silently exceeded the grid width at 0.1° and returned NaN for every row.
+# offshore offset silently exceeded the grid_c width at 0.1° and returned NaN for every row.
 const N_COAST     = max(1, round(Int, 0.50 / Δdeg))   # ~50 km inshore band
 const N_OFFSHORE  = round(Int, 3.00 / Δdeg)           # reference centred ~300 km offshore
 const N_OFF_HALF  = max(1, round(Int, 0.25 / Δdeg))   # ~25 km half-width on that reference
 # Easternmost wet surface cell per row = the coast. NaN where the row has no water.
 const i_coast = [findlast(i -> wet3d[i, j, Nz], 1:Nx) for j in 1:Ny]
 
-function upwelling_index(model)
-    T = model.tracers.T
+function upwelling_index(T)
     cT = oT = sT = 0.0; nc = no = ns = 0
     @inbounds for j in 1:Ny
         ic = i_coast[j]
@@ -512,8 +569,7 @@ function upwelling_index(model)
 end
 
 # Original fixed-longitude definition, kept only so the January run stays comparable.
-function upwelling_index_fixedλ(model)
-    T = model.tracers.T
+function upwelling_index_fixedλ(T)
     cT = oT = 0.0; nc = no = 0
     @inbounds for j in 1:Ny, i in 1:Nx
         wet3d[i, j, Nz] || continue
@@ -530,12 +586,11 @@ end
 # which makes the budget checkable by inspection rather than by trusting the advection scheme.
 # Mean age is ac/c over the whole tracer-bearing volume (Deleersnijder); it is only meaningful once
 # there is tracer to speak of, so it is reported as NaN until the inventory is non-trivial.
-function tracer_budget(model)
-    c, ac = model.tracers.c, model.tracers.ac
+function tracer_budget(c, ac)
     C = 0.0; AC = 0.0; cmax = -Inf; imax = CartesianIndex(1, 1, 1)
     @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
-        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
-        v = Vᶜᶜᶜ(i, j, k, grid)
+        wetcell(i, j, k, grid_c, Center(), Center(), Center()) || continue
+        v = Vᶜᶜᶜ(i, j, k, grid_c)
         C += v * c[i, j, k]; AC += v * ac[i, j, k]
         if c[i, j, k] > cmax; cmax = c[i, j, k]; imax = CartesianIndex(i, j, k); end
     end
@@ -543,30 +598,27 @@ function tracer_budget(model)
 end
 
 # Advective tracer flux through each open edge; + = into the domain, so a negative sum is export.
-function tracer_export(model)
-    c = model.tracers.c
-    u, v = model.velocities.u, model.velocities.v
+function tracer_export(c, u, v)
     W = 0.0; So = 0.0; N = 0.0
     @inbounds for k in 1:Nz, j in 1:Ny
-        wetcell(1, j, k, grid, Face(), Center(), Center()) &&
-            (W += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid) * c[1, j, k])
+        wetcell(1, j, k, grid_c, Face(), Center(), Center()) &&
+            (W += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid_c) * c[1, j, k])
     end
     @inbounds for k in 1:Nz, i in 1:Nx
-        wetcell(i, 1, k, grid, Center(), Face(), Center()) &&
-            (So += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid) * c[i, 1, k])
-        wetcell(i, Ny+1, k, grid, Center(), Face(), Center()) &&
-            (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid) * c[i, Ny, k])
+        wetcell(i, 1, k, grid_c, Center(), Face(), Center()) &&
+            (So += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid_c) * c[i, 1, k])
+        wetcell(i, Ny+1, k, grid_c, Center(), Face(), Center()) &&
+            (N -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid_c) * c[i, Ny, k])
     end
     return W, So, N
 end
 
 # --- Conservation and stability monitors --------------------------------------
-function salt_and_volume(model)
-    S = model.tracers.S
+function salt_and_volume(S)
     V = 0.0; SV = 0.0
     @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
-        wetcell(i, j, k, grid, Center(), Center(), Center()) || continue
-        v = Vᶜᶜᶜ(i, j, k, grid)
+        wetcell(i, j, k, grid_c, Center(), Center(), Center()) || continue
+        v = Vᶜᶜᶜ(i, j, k, grid_c)
         V += v; SV += v * S[i, j, k]
     end
     return SV, V
@@ -602,31 +654,28 @@ const σ_INTERMEDIATE = 27.70     # ≈ 1800 m; NADW
 @inline σθ_of(T, S) = SWP.ρ(T, S, 0.0, eos) - 1000.0
 @inline density_layer(σ) = σ < σ_THERMOCLINE ? 1 : (σ < σ_INTERMEDIATE ? 2 : 3)
 
-function layered_boundary_transports(model)
-    T, S = model.tracers.T, model.tracers.S
-    u, v = model.velocities.u, model.velocities.v
+function layered_boundary_transports(T, S, u, v)
     Q = zeros(3, 3)                     # [boundary W/S/N, layer thermocline/intermediate/deep]
     @inbounds for k in 1:Nz, j in 1:Ny
-        wetcell(1, j, k, grid, Face(), Center(), Center()) || continue
-        Q[1, density_layer(σθ_of(T[1, j, k], S[1, j, k]))] += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid)
+        wetcell(1, j, k, grid_c, Face(), Center(), Center()) || continue
+        Q[1, density_layer(σθ_of(T[1, j, k], S[1, j, k]))] += u[1, j, k] * Axᶠᶜᶜ(1, j, k, grid_c)
     end
     @inbounds for k in 1:Nz, i in 1:Nx
-        if wetcell(i, 1, k, grid, Center(), Face(), Center())
-            Q[2, density_layer(σθ_of(T[i, 1, k], S[i, 1, k]))] += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid)
+        if wetcell(i, 1, k, grid_c, Center(), Face(), Center())
+            Q[2, density_layer(σθ_of(T[i, 1, k], S[i, 1, k]))] += v[i, 1, k] * Ayᶜᶠᶜ(i, 1, k, grid_c)
         end
-        if wetcell(i, Ny+1, k, grid, Center(), Face(), Center())
-            Q[3, density_layer(σθ_of(T[i, Ny, k], S[i, Ny, k]))] -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid)
+        if wetcell(i, Ny+1, k, grid_c, Center(), Face(), Center())
+            Q[3, density_layer(σθ_of(T[i, Ny, k], S[i, Ny, k]))] -= v[i, Ny+1, k] * Ayᶜᶠᶜ(i, Ny+1, k, grid_c)
         end
     end
     return Q
 end
 
-function static_instability(model)
-    T, S = model.tracers.T, model.tracers.S
+function static_instability(T, S)
     n = 0; worst = 0.0
     @inbounds for j in 1:Ny, i in 1:Nx, k in 1:(Nz-1)
-        (wetcell(i, j, k,   grid, Center(), Center(), Center()) &&
-         wetcell(i, j, k+1, grid, Center(), Center(), Center())) || continue
+        (wetcell(i, j, k,   grid_c, Center(), Center(), Center()) &&
+         wetcell(i, j, k+1, grid_c, Center(), Center(), Center())) || continue
         zr = 0.5 * (z_centers[k] + z_centers[k+1])
         Δρ = SWP.ρ(T[i, j, k+1], S[i, j, k+1], zr, eos) - SWP.ρ(T[i, j, k], S[i, j, k], zr, eos)
         if Δρ > 1e-4; n += 1; worst = max(worst, Δρ); end
@@ -636,22 +685,22 @@ end
 
 function surface_freshwater_flux(m)
     use_atmos || return 0.0
-    Jη = m.interfaces.net_fluxes.ocean.η
+    Jη = arr(m.interfaces.net_fluxes.ocean.η)
     Q = 0.0
     @inbounds for j in 1:Ny, i in 1:Nx
-        immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()) && continue
-        Q += Jη[i, j, 1] * Azᶜᶜᶜ(i, j, Nz, grid)
+        immersed_inactive_node(i, j, Nz, grid_c, Center(), Center(), Center()) && continue
+        Q += Jη[i, j, 1] * Azᶜᶜᶜ(i, j, Nz, grid_c)
     end
     return Q
 end
 
 function native_range(fts, floor_value)
-    a = filter(x -> x > floor_value, vec(interior(fts[1])))
+    a = filter(x -> x > floor_value, vec(Array(interior(fts[1]))))
     isempty(a) ? (NaN, NaN) : (minimum(a), maximum(a))
 end
 T_ref = native_range(T_fts, 1.0); S_ref = native_range(S_fts, 5.0)
 @info @sprintf("Reference (GLORYS native): T ∈ [%.3f, %.3f] | S ∈ [%.3f, %.3f]", T_ref[1], T_ref[2], S_ref[1], S_ref[2])
-let (lo,_,hi,_) = wet_extrema(ocean.model.tracers.T), (slo,_,shi,_) = wet_extrema(ocean.model.tracers.S)
+let (lo,_,hi,_) = wet_extrema(arr(ocean.model.tracers.T)), (slo,_,shi,_) = wet_extrema(arr(ocean.model.tracers.S))
     @info @sprintf("Initial condition (wet):    T ∈ [%.3f, %.3f] | S ∈ [%.3f, %.3f]", lo, hi, slo, shi)
 end
 let (W, S_, N) = glorys_residuals(Time(0.0))
@@ -663,7 +712,7 @@ end
 # γⁿ surfaces is visible rather than assumed. The papers put γⁿ=26.85 at roughly 80-320 m; if our
 # σθ=27.38 surface sits much deeper than their ~700 m thermocline base, our "thermocline" layer is
 # including intermediate water and will read high against theirs.
-let T = ocean.model.tracers.T, S = ocean.model.tracers.S
+let T = arr(ocean.model.tracers.T), S = arr(ocean.model.tracers.S)
     for σ in (26.85, σ_THERMOCLINE, σ_INTERMEDIATE)
         d = Float64[]
         for j in 1:Ny, i in 1:Nx
@@ -678,9 +727,10 @@ let T = ocean.model.tracers.T, S = ocean.model.tracers.S
 end
 
 const salt₀ = Ref(0.0); const vol₀ = Ref(0.0)
-let (SV, V) = salt_and_volume(ocean.model)
-    n, w = static_instability(ocean.model)
-    Tc, To, ΔT, Ts = upwelling_index(ocean.model)
+let Ta0 = arr(ocean.model.tracers.T), Sa0 = arr(ocean.model.tracers.S)
+    SV, V = salt_and_volume(Sa0)
+    n, w = static_instability(Ta0, Sa0)
+    Tc, To, ΔT, Ts = upwelling_index(Ta0)
     @info @sprintf("At rest: salt %.6e | volume %.6e | mean S %.4f | unstable pairs %d (worst Δρ %.3f)",
                    SV, V, SV/V, n, w)
     @info @sprintf("At rest: SST coastal %.3f, offshore %.3f, ΔT %+.3f °C | T at %.0f m over shelf %.3f °C",
@@ -691,40 +741,45 @@ const wall_t0 = Ref(Base.time()); const wall_last = Ref(Base.time()); const sim_
 
 function progress(sim)
     model = ocean_model_of(sim.model)
-    u, v, w = model.velocities
-    T, S = model.tracers.T, model.tracers.S
-    η = free_surface_field(model.free_surface)
-    Tmin, _, Tmax, _ = wet_extrema(T)
-    Smin, Imin, Smax, Imax = wet_extrema(S)
-    _, Iw = findmax(abs, interior(w)); _, Iu = findmax(abs, interior(u))
+    sync_grid_c!()
+    # ONE device->host copy per field per block, then everything below is plain array work. This is
+    # what makes the script GPU-safe: the diagnostics all index cell by cell, which a device array
+    # will not allow. ~17 MB per field at 0.02°, every 10 iterations -- negligible against the step.
+    ua, va, wa = arr(model.velocities.u), arr(model.velocities.v), arr(model.velocities.w)
+    Ta, Sa = arr(model.tracers.T), arr(model.tracers.S)
+    ηa = arr(free_surface_field(model.free_surface))
+    Tmin, _, Tmax, _ = wet_extrema(Ta)
+    Smin, Imin, Smax, Imax = wet_extrema(Sa)
+    _, Iw = findmax(abs, wa); _, Iu = findmax(abs, ua)
 
     @info @sprintf("iter %d | t = %s | Δt = %s | max|u,v,w| = (%.2e, %.2e, %.2e) | max|η| = %.3e | T ∈ [%.3f, %.3f] | S ∈ [%.3f, %.3f] (excursion %+.3f / %+.3f)",
                    iteration(sim), prettytime(time(sim)), prettytime(sim.Δt),
-                   maximum(abs, u), maximum(abs, v), maximum(abs, w), maximum(abs, η),
+                   maximum(abs, ua), maximum(abs, va), maximum(abs, wa), maximum(abs, ηa),
                    Tmin, Tmax, Smin, Smax, Smin - S_ref[1], Smax - S_ref[2])
     @info @sprintf("        where: Smax %s | Smin %s | max|w| %s | max|u| %s",
                    whereis(Imax), whereis(Imin), whereis(Iw), whereis(Iu))
 
-    W, So, N = boundary_transports(model)
+    W, So, N = boundary_transports(ua, va)
     Wr, Sr, Nr = glorys_residuals(Time(model.clock.time))
     @info @sprintf("        transport (+ = inflow): west %+.3e  south %+.3e  north %+.3e | net %+.3e m³/s -> %+.3e m/hour",
                    W, So, N, W+So+N, (W+So+N) / wet_surface_area * 3600)
     @info @sprintf("        GLORYS residual (uncorrected): west %+.3e  south %+.3e  north %+.3e | net %+.3e m³/s",
                    Wr, Sr, Nr, Wr+Sr+Nr)
 
-    Q = layered_boundary_transports(model)
+    Q = layered_boundary_transports(Ta, Sa, ua, va)
     for (li, lab) in ((1, "Canary Cur σθ<27.10"), (2, "undercurrent  <27.70"), (3, "deep      σθ≥27.70"))
         @info @sprintf("        %s: west %+7.3f  south %+7.3f  north %+7.3f | net %+7.3f Sv",
                        lab, Q[1,li]/1e6, Q[2,li]/1e6, Q[3,li]/1e6, sum(Q[:,li])/1e6)
     end
 
-    Tc, To, ΔT, Ts = upwelling_index(model)
+    Tc, To, ΔT, Ts = upwelling_index(Ta)
     @info @sprintf("        UPWELLING: SST coastal %.3f  offshore %.3f  ΔT %+.3f °C | T at %.0f m over shelf %.3f °C | ΔT(fixed-λ, Jan-comparable) %+.3f",
-                   Tc, To, ΔT, z_centers[k_src], Ts, upwelling_index_fixedλ(model))
+                   Tc, To, ΔT, z_centers[k_src], Ts, upwelling_index_fixedλ(Ta))
 
     if use_tracer
-        C, AC, cmax, imax = tracer_budget(model)
-        Wt, St, Nt = tracer_export(model)
+        ca, aca = arr(model.tracers.c), arr(model.tracers.ac)
+        C, AC, cmax, imax = tracer_budget(ca, aca)
+        Wt, St, Nt = tracer_export(ca, ua, va)
         elapsed = max(time(sim), eps())
         @info @sprintf("        TRACER: inventory %.4e of %.4e released (%.2f%%) | mean age %s | max c %.3e %s",
                        C, elapsed, 100C/elapsed,
@@ -734,8 +789,8 @@ function progress(sim)
                        Wt, St, Nt, Wt+St+Nt)
     end
 
-    SV, V = salt_and_volume(model)
-    ninv, worstΔρ = static_instability(model)
+    SV, V = salt_and_volume(Sa)
+    ninv, worstΔρ = static_instability(Ta, Sa)
     if vol₀[] == 0.0 && iteration(sim) > 0
         salt₀[], vol₀[] = SV, V
         @info @sprintf("        drift baseline set at t = %s (σ reconciled)", prettytime(time(sim)))

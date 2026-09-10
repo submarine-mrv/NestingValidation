@@ -377,6 +377,43 @@ of `(x,y,z,t)` specifically so it runs unchanged on GPU, but **the diagnostics a
 index model fields directly, which GPU disallows. That refactor (CPU field copies plus a CPU grid for
 the metric operators) is the remaining blocker.
 
+## Running on GPU
+
+`CANARY_ARCH=GPU`. The long tracer runs need it: residence time in this region is weeks to months,
+which at ~39 s/iter on CPU is days of wall clock.
+
+The boundary conditions and the tracer forcing were already device kernels — the release source is a
+continuous-form pure function of `(x,y,z,t)` rather than a masked array for exactly this reason. The
+**diagnostics** were the obstacle: they all walk the grid cell by cell, which a device array will not
+allow. They now operate on host copies:
+
+- `grid_c` — a CPU mirror of the grid, because the metric operators (`Vᶜᶜᶜ`, `Axᶠᶜᶜ`, `Azᶜᶜᶜ`) read the
+  grid's own coordinate arrays, so the grid must be on the host too.
+- `arr(f)` — one device→host copy per field per progress block (~17 MB each at 0.02°, every 10
+  iterations; negligible against the step cost).
+- Setup-time work that samples the parent point by point — the initial condition, η, `fill_down!` —
+  routes through host copies of the parent series.
+
+**`sync_grid_c!` is load-bearing under z\*, and the reason is not obvious.** On CPU,
+`on_architecture(CPU(), grid)` *shares* the z\* state arrays (σ, η, ∂t_σ), so the mirror's metrics
+track the live grid for free. **On GPU it is a genuine copy.** Without an explicit sync every
+diagnostic would read metrics frozen at the rest state — including `salt_and_volume`, which exists to
+measure z\* drift and would then report ≈0 regardless of what z\* actually did. That is a
+plausible-looking wrong answer on a months-long run, not a crash. The sync copies the z\* state
+host-ward once per block and is a no-op on CPU.
+
+**Verified by equivalence, not by inspection.** A CPU run before and after the refactor produces
+byte-identical output apart from wall-clock timings. That proves the refactor changed no numbers; it
+does **not** prove the GPU path works — there is no CUDA on the development machine, so
+`CANARY_ARCH=GPU` is unexercised. Every construct GPU rejects has been removed from the host paths,
+but the first real GPU run may still surface something.
+
+One thing was tried and reverted: precomputing the GLORYS residual at setup and interpolating in time.
+The parent's time interpolation is exactly linear (verified pointwise to ~1e-13), so that part was
+sound — but precomputing also froze the **section areas** at their rest state, and under z\* those
+breathe with the free surface. It shifted the diagnostic by a few tenths of a percent against the
+validated baseline, so it is computed live on host copies instead.
+
 ## Status and what is untested
 
 Smoke-tested end to end at 0.1°: all three boundaries carry transport, z\*, JRA55, the conservation
@@ -389,7 +426,8 @@ test. Not yet established:
   January.
 - **The tracer release has not been run in production**, only verified. It needs a GPU run of weeks to
   months to answer the residence-time question.
-- **The diagnostics are not GPU-ready** — scalar indexing into model fields. This blocks the long run.
+- ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. Verified byte-identical on
+  CPU; the **GPU path itself is untested** (no CUDA on the development machine).
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
   Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
   strong case, and the domain's own signal will be clearer there.
