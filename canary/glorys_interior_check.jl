@@ -53,7 +53,9 @@ wetcols = findall(wet2d)
 # --- parent validity mask -----------------------------------------------------
 glorys_region = DW.BoundingBox(longitude=(-22.0,-9.5), latitude=(24.5,30.0))
 glorys = DW.GLORYSDaily()
-S_raw = Field(DW.Metadatum(:salinity; dataset=glorys, region=glorys_region, date=check_date); inpainting=nothing)
+# CANARY_GLORYS_DIR points at a gcsfuse mount on GCP; unset falls back to the local download cache.
+const GLORYS_KW = let d = get(ENV, "CANARY_GLORYS_DIR", ""); isempty(d) ? (;) : (; dir = d) end
+S_raw = Field(DW.Metadatum(:salinity; dataset=glorys, region=glorys_region, date=check_date, GLORYS_KW...); inpainting=nothing)
 Sr = Array(interior(S_raw)); ngx,ngy,ngz = size(Sr)
 gz  = znodes(S_raw.grid, map(L->L(), location(S_raw))...)
 gzf = znodes(S_raw.grid, Center(), Center(), Face())
@@ -120,7 +122,7 @@ function fill_down!(a,floor_value)
     a
 end
 dates=[check_date, check_date+Day(1)]
-mk(var)=DW.Metadata(var; dataset=glorys, dates, region=glorys_region)
+mk(var)=DW.Metadata(var; dataset=glorys, dates, region=glorys_region, GLORYS_KW...)
 S_fts=FieldTimeSeries(mk(:salinity),arch;time_indices_in_memory=2,inpainting=bc_inpainting)
 T_fts=FieldTimeSeries(mk(:temperature),arch;time_indices_in_memory=2,inpainting=bc_inpainting)
 for n in 1:2; fill_down!(interior(S_fts[n]),5.0); fill_down!(interior(T_fts[n]),1.0); end

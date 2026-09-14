@@ -120,6 +120,17 @@ glorys_region = DW.BoundingBox(longitude = (-22.0, -9.5), latitude = (24.5, 30.0
 @assert λ₁ >= -22.0 && λ₂ <= -9.5 && φ₁ >= 24.5 && φ₂ <= 30.0 "domain outside glorys_region"
 glorys = DW.GLORYSDaily()
 
+# Where the parent data lives. Unset (the default) falls back to NumericalEarth's own download cache,
+# which is what a local run wants. On GCP these point at gcsfuse mounts -- GLORYS is in the obs bucket
+# and JRA55 in the forcing bucket, so they are separate roots rather than one.
+#   CANARY_GLORYS_DIR=/mnt/obs/GLORYS  CANARY_JRA55_DIR=/mnt/forcing/JRA55
+glorys_dir = get(ENV, "CANARY_GLORYS_DIR", "")
+jra55_dir  = get(ENV, "CANARY_JRA55_DIR",  "")
+const GLORYS_KW = isempty(glorys_dir) ? (;) : (; dir = glorys_dir)
+const JRA55_KW  = isempty(jra55_dir)  ? (;) : (; dir = jra55_dir)
+isempty(glorys_dir) || @info "GLORYS dir: $glorys_dir"
+isempty(jra55_dir)  || @info "JRA55 dir:  $jra55_dir"
+
 # --- Passive tracer release (optional) ----------------------------------------
 # For pathway and residence-time work: a continuous release at a point on Gran Canaria, of the kind
 # an ocean alkalinity enhancement outfall would represent.
@@ -172,7 +183,7 @@ restoring_rate      = 1 / restoring_timescale
                gaussian_edge(dn, sponge_width))
 end
 
-restoring_meta(var) = DW.Metadata(var; dataset = glorys, dates = boundary_dates, region = glorys_region)
+restoring_meta(var) = DW.Metadata(var; dataset = glorys, dates = boundary_dates, region = glorys_region, GLORYS_KW...)
 bc_inpainting = DW.NearestNeighborInpainting(100)
 
 # Vertical constant extrapolation below the parent's deepest valid level. Insurance in the Red Sea;
@@ -247,7 +258,7 @@ v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 @inline T_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(T_fts, i, grid.Ny, k, T_native, grid, Time(clock.time))
 @inline S_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(S_fts, i, grid.Ny, k, S_native, grid, Time(clock.time))
 
-zos_meta = DW.Metadata(:free_surface; dataset = glorys, dates = boundary_dates, region = glorys_region)
+zos_meta = DW.Metadata(:free_surface; dataset = glorys, dates = boundary_dates, region = glorys_region, GLORYS_KW...)
 zos_fts  = FieldTimeSeries(zos_meta, arch;
                            time_indices_in_memory = n_times,
                            time_indexing = Oceananigans.OutputReaders.Cyclical(),
@@ -387,7 +398,7 @@ if use_atmos
     jra_stop  = jra_start + Day(run_days + margin_days)
     @info @sprintf("JRA55 %s: %s .. %s", jra_multiyear ? "MultiYear" : "RepeatYear", jra_start, jra_stop)
     atmos_kw = (; dataset = jra_dataset, start_date = jra_start, end_date = jra_stop,
-                  time_indices_in_memory = 24)
+                  time_indices_in_memory = 24, JRA55_KW...)
     atmosphere = NumericalEarth.JRA55PrescribedAtmosphere(arch; atmos_kw...)
     radiation_component = NumericalEarth.JRA55PrescribedRadiation(arch; atmos_kw...)
 end
