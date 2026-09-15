@@ -88,3 +88,41 @@ Both live under `~/.julia/scratchspaces/904d977b-046a-4731-8b86-9235c0d1ef02/`:
 CFL limit of ~3.4 min. A 7-day run is ~2580 iterations and ~12 h. The `pacing:` line in the progress
 output reports live s/iter and an ETA — use s/iter for planning, since the ETA reads pessimistic
 until Δt caps.
+
+## GCP GPU runs
+
+Verified 2026-09-15 on project `<gcp-project>`. No Docker: the VM runs Julia directly.
+
+**Image.** Family `canary-julia112-cuda` (`canary-julia112-cuda-v1`), built on the ModelBenchmarking
+`climaocean-env` image (NVIDIA driver 535, Container Toolkit, gcsfuse) plus Julia 1.12.2 and this
+repo's depot, precompiled on an L4 so the CUDA-aware cache is real. CUDA.jl fetches its own runtime
+(13.4), so the old driver is fine. v1 accidentally includes ~23 GB of local data copies and gcsfuse
+cache (a cleanup step failed before the snapshot); rebuild from a cleaned disk if storage matters.
+
+**Machine.** `g2-standard-8` (L4 24 GB, 8 vCPU, 31 GB RAM) in `us-central1-a`. Quota at time of writing:
+20 L4, 16 A100, 8 T4 in us-central1, none in use.
+
+**Data.** Mounted with gcsfuse rather than copied; both buckets are US multi-region.
+
+    gcsfuse --implicit-dirs <obs-bucket> /mnt/obs
+    gcsfuse --implicit-dirs --cache-dir /var/gcsfuse-cache --file-cache-max-size-mb -1 \
+            --file-cache-cache-file-for-range-read <forcing-bucket> /mnt/forcing-cache
+    CANARY_GLORYS_DIR=/mnt/obs/glorys  CANARY_JRA55_DIR=/mnt/forcing-cache/jra55-ryf
+
+Canary GLORYS (both windows, 288 MB) was uploaded to `<obs-bucket>/glorys/`; JRA55 RYF was
+already in `<forcing-bucket>/jra55-ryf/`. Measured: on first load mount vs local copy
+differs only by noise (compile time dominates); on JRA55 window reloads a plain mount is 17% slower
+(1.17 vs 1.00 s per reload) and a mount with file cache matches a copy (0.97 s, 9 GB of local cache).
+
+**Traps, all hit:**
+
+- **Memory during GPU compilation can exhaust the VM**, which then thrashes rather than crashes — SSH
+  times out and the kernel logs nothing. Diagnose with Cloud Monitoring (CPU flat, disk reads in the
+  hundreds of thousands per minute), reset the VM, and run with a watchdog that kills Julia below 2 GB
+  free. `kill -USR1 <julia pid>` prints a stack profile, which is how the compile blowup was located.
+- **Julia's stderr is block-buffered when redirected**, so a log can stay empty for many minutes.
+- **An illegal CUDA address is reported at the next synchronisation, not where it happens.**
+  `CUDA_LAUNCH_BLOCKING=1` makes the error name the kernel that caused it.
+- **Frequent SSH polling gets throttled** ("timed out during banner exchange"); poll every few minutes.
+- `pgrep -f <pattern>` inside a `bash -c "... <pattern> ..."` matches itself.
+- A full GPU launch spends ~8 minutes compiling before the first iteration at 0.1°.

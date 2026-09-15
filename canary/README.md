@@ -402,11 +402,36 @@ measure z\* drift and would then report ≈0 regardless of what z\* actually did
 plausible-looking wrong answer on a months-long run, not a crash. The sync copies the z\* state
 host-ward once per block and is a no-op on CPU.
 
-**Verified by equivalence, not by inspection.** A CPU run before and after the refactor produces
-byte-identical output apart from wall-clock timings. That proves the refactor changed no numbers; it
-does **not** prove the GPU path works — there is no CUDA on the development machine, so
-`CANARY_ARCH=GPU` is unexercised. Every construct GPU rejects has been removed from the host paths,
-but the first real GPU run may still surface something.
+**Verified on GPU, against CPU.** The full configuration — JRA55 atmosphere, tracer release, three
+open boundaries, nudging, z\* — runs on an NVIDIA L4 and matches a CPU run of the same configuration in
+every model-state diagnostic over 16 blocks at 0.1°: velocities, η, T and S ranges, layered boundary
+transports, salt and volume drift, unstable pairs, surface freshwater flux, the upwelling index, tracer
+inventory and mean age. The only differing numbers are tracer export through the open boundaries at
+magnitudes ≤ 1e-25 /s, i.e. round-off on a tracer that has not reached any boundary. The ocean-only
+configuration matches identically too. **0.08 s/iter on GPU against 1.13 s/iter on CPU** at 0.1°.
+
+Getting there needed four changes, recorded because each fails in a way that is not obviously
+diagnosable (see also `docs/environment.md`):
+
+1. **Boundary exteriors precomputed** — below.
+2. **`using CUDA` must execute**, and kernel-read globals must be `const` — below.
+3. **`ZeroField()` defaults to `Float64` on GPU.** NumericalEarth's `_assemble_net_ocean_fluxes!`
+   hits `CUDA_ERROR_ILLEGAL_ADDRESS` while the coupled model is built. Reproduced in a minimal script
+   with none of this configuration's code (stock `ocean_simulation` + JRA55 + `OceanOnlyModel` on a
+   small regional grid). Every array argument checked out on-device and in bounds; the same kernel call
+   runs with the placeholder `ZeroField`s typed `Float64` and fails with the default `Int`, in the same
+   process. Integer `ZeroField`s do work in other kernels, so it is specific to this call — likely an
+   upstream compiler issue. The override is one line in the GPU-only block, and cannot change results:
+   the GPU run (with it) and the CPU run (without) are identical.
+4. **The age tracer's source is a callback, not a `Forcing`.** A forcing with
+   `field_dependencies = :c` makes the tracer tendency kernel use `model_fields`, which drags in a
+   free-surface property access that fails GPU compilation (`InvalidIRError`, `ijl_get_nth_field_checked`
+   in `free_surface_fields`). `ac .+= Δt·c` after each step instead lags advection by one Δt; on CPU it
+   matches the forcing version in every non-age diagnostic and in tracer inventory, with mean age equal
+   to three decimals of a day.
+
+Items 3 and 4 are workarounds for dependency behaviour and should be revisited when NumericalEarth or
+Oceananigans is upgraded.
 
 **Boundary exteriors are precomputed, not sampled in the kernels.** The first GPU attempts never
 reached a timestep: compiling the boundary-condition halo fills sent the CUDA compiler's inliner past
@@ -444,8 +469,8 @@ test. Not yet established:
   January.
 - **The tracer release has not been run in production**, only verified. It needs a GPU run of weeks to
   months to answer the residence-time question.
-- ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. Verified byte-identical on
-  CPU; the **GPU path itself is untested** (no CUDA on the development machine).
+- ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. The full configuration runs on
+  an L4 and matches CPU. **0.02° has not yet been run on GPU**, so its speed and GPU memory are unmeasured.
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
   Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
   strong case, and the domain's own signal will be clearer there.

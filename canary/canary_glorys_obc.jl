@@ -34,6 +34,10 @@ const SWP = Oceananigans.BuoyancyFormulations.SeawaterPolynomials
 # GPU() is defined by Oceananigans' CUDA extension, which only loads once CUDA itself is loaded.
 if get(ENV, "CANARY_ARCH", "CPU") == "GPU"
     using CUDA
+    # Workaround: ZeroField() defaults to an Int placeholder, and NumericalEarth's
+    # _assemble_net_ocean_fluxes! kernel hits CUDA_ERROR_ILLEGAL_ADDRESS when it receives those
+    # (verified: identical call with ZeroField{Float64} runs). Adding 0.0 instead of 0 changes nothing.
+    @eval Oceananigans.Fields ZeroField() = ZeroField{Float64, 3}()
 end
 arch = get(ENV, "CANARY_ARCH", "CPU") == "GPU" ? GPU() : CPU()
 @info "Architecture: $(typeof(arch).name.name)"
@@ -411,7 +415,6 @@ const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV =
     inside = (dx*dx + dy*dy < R_release^2) & (z > -D_release)
     return ifelse(inside, RELEASE_RATE, zero(x))
 end
-@inline age_source(x, y, z, t, c) = c        # ∂ac/∂t = c, so ac/c is the mean age
 
 # Zero exterior at every open boundary: there is no released tracer outside the domain, so this lets
 # it leave freely. A default no-flux condition would trap it and make residence time meaningless.
@@ -423,7 +426,10 @@ tracer_bcs() = FieldBoundaryConditions(
     north = ValueBoundaryCondition(zero_ns;   scheme = radiation, discrete_form = true))
 
 tracer_names   = use_tracer ? (:T, :S, :c, :ac) : (:T, :S)
-tracer_forcing = use_tracer ? (; c = Forcing(c_source), ac = Forcing(age_source, field_dependencies = :c)) : (;)
+# ac gets its source (∂ac/∂t = c) from a callback, not a Forcing: a forcing with field_dependencies
+# makes the tracer kernel read model_fields, which fails to compile on GPU (InvalidIRError in
+# free_surface_fields). Applied after each step, so the age source lags advection by one Δt.
+tracer_forcing = use_tracer ? (; c = Forcing(c_source)) : (;)
 tracer_bc_pair = use_tracer ? (; c = tracer_bcs(), ac = tracer_bcs()) : (;)
 
 # --- Ocean simulation ---------------------------------------------------------
@@ -498,6 +504,15 @@ else
     simulation = ocean
 end
 ocean_model_of(m) = hasproperty(m, :ocean) ? (hasproperty(m.ocean, :model) ? m.ocean.model : m.ocean) : m
+
+if use_tracer
+    function accumulate_age!(sim)
+        m = ocean_model_of(sim.model)
+        interior(m.tracers.ac) .+= sim.Δt .* interior(m.tracers.c)
+        return nothing
+    end
+    add_callback!(simulation, accumulate_age!, IterationInterval(1))
+end
 
 # --- Diagnostics --------------------------------------------------------------
 z_centers = znodes(grid_c, Center(), Center(), Center())
