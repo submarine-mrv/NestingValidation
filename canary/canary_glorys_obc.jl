@@ -31,6 +31,10 @@ const SWP = Oceananigans.BuoyancyFormulations.SeawaterPolynomials
 # either: the boundary conditions and the tracer forcing are device kernels already, and every
 # DIAGNOSTIC operates on CPU copies (see grid_c / arr below) because GPU disallows the scalar indexing
 # they all use.
+# GPU() is defined by Oceananigans' CUDA extension, which only loads once CUDA itself is loaded.
+if get(ENV, "CANARY_ARCH", "CPU") == "GPU"
+    using CUDA
+end
 arch = get(ENV, "CANARY_ARCH", "CPU") == "GPU" ? GPU() : CPU()
 @info "Architecture: $(typeof(arch).name.name)"
 
@@ -49,8 +53,9 @@ boundary_dates = run_start : Day(1) : (run_start + Day(run_days + margin_days))
 # WEST, SOUTH and NORTH are the open boundaries. West is 100% wet at 4578-4885 m; north 99% wet;
 # south 58% wet, its land being the African coast at the SE corner. Combined open area ~7.6e3 km²
 # against 719 km² for the Red Sea.
-λ₁, λ₂ = (-21.5, -10.0)
-φ₁, φ₂ = ( 25.0,  29.5)
+# const: read inside GPU kernels (sponge mask), where non-const globals cannot be compiled.
+const λ₁, λ₂ = (-21.5, -10.0)
+const φ₁, φ₂ = ( 25.0,  29.5)
 
 # 0.02 deg = 2.06 km at 27.25N, 575 x 225 x 32 = 4.1M cells, i.e. about the Red Sea's cost per step.
 # 0.01 deg (1.03 km) is the target for resolving island wakes and the upwelling filaments, but at
@@ -146,10 +151,10 @@ isempty(jra55_dir)  || @info "JRA55 dir:  $jra55_dir"
 # boundaries. Default site is Las Palmas (-15.38, 28.16): wet, 535 m, 47 of 49 neighbouring cells wet,
 # and the island's main port.
 use_tracer  = get(ENV, "CANARY_TRACER", "0") == "1"
-λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",   "-15.38"))
-φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",    "28.16"))
-R_release   = parse(Float64, get(ENV, "CANARY_RELEASE_R",       "0.05"))   # degrees, ~5 km
-D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "20.0"))    # metres below surface
+const λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",   "-15.38"))
+const φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",    "28.16"))
+const R_release   = parse(Float64, get(ENV, "CANARY_RELEASE_R",       "0.05"))   # degrees, ~5 km
+const D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "20.0"))    # metres below surface
 
 # --- Boundary conditions ------------------------------------------------------
 using Oceananigans.BoundaryConditions: NormalRadiation,
@@ -169,7 +174,7 @@ radiation = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
 # (0.25 deg ≈ 12 cells at 0.02) so the shelf and the island wakes run free: the Salish lesson was
 # that a wide sponge pins the very features the domain exists to resolve, and here the upwelling
 # front sits against the eastern coast, far from every sponge.
-sponge_width        = parse(Float64, get(ENV, "CANARY_SPONGE", "0.25"))
+const sponge_width  = parse(Float64, get(ENV, "CANARY_SPONGE", "0.25"))
 restoring_timescale = 12hours
 restoring_rate      = 1 / restoring_timescale
 
@@ -229,10 +234,10 @@ let Ti = interior(T_restoring.field_time_series[1]), Si = interior(S_restoring.f
                    minimum(Ti), maximum(Ti), minimum(Si), maximum(Si), 100count(==(0), Si) / length(Si))
 end
 
-T_fts, T_native = T_restoring.field_time_series, T_restoring.native_grid
-S_fts, S_native = S_restoring.field_time_series, S_restoring.native_grid
-u_fts, u_native = u_restoring.field_time_series, u_restoring.native_grid
-v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
+const T_fts, T_native = T_restoring.field_time_series, T_restoring.native_grid
+const S_fts, S_native = S_restoring.field_time_series, S_restoring.native_grid
+const u_fts, u_native = u_restoring.field_time_series, u_restoring.native_grid
+const v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 
 # --- GLORYS section residual (diagnostic only) --------------------------------
 # No net-transport correction: measured in red_sea/ to change nothing a Flather boundary does not
@@ -242,80 +247,133 @@ v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 # --- Exteriors ----------------------------------------------------------------
 # Inflow is +u at west, +v at south, -v at north. Oceananigans applies the side-dependent Flather
 # sign itself (west/south: U = Uᵉˣᵗ − √(gH)(ηᵇ − ηᵉˣᵗ); north/east: +), so these closures return the
-# exterior value only. Do NOT pre-flip signs here -- that double inversion is exactly the bug the
-# Red Sea configuration carried through its whole validation run.
-@inline u_west_exterior(j, k, grid, clock, fields) =
-    DW.interpolate_to_grid(u_fts, 1, j, k, u_native, grid, Time(clock.time))
-@inline v_south_exterior(i, k, grid, clock, fields) =
-    DW.interpolate_to_grid(v_fts, i, 1, k, v_native, grid, Time(clock.time))
-@inline v_north_exterior(i, k, grid, clock, fields) =
-    DW.interpolate_to_grid(v_fts, i, grid.Ny + 1, k, v_native, grid, Time(clock.time))
+# exterior value only. Do NOT pre-flip signs -- that double inversion is the bug red_sea/ carried.
+#
+# The parent is interpolated onto the three boundary faces ONCE, here, into plain (face × depth × time)
+# arrays that the boundary kernels read by index and interpolate linearly in time. Sampling the
+# NumericalEarth series inside the kernels instead works on CPU but not on GPU: their deeply
+# parametric types sent the CUDA compiler's inliner past 31 GB before the first halo fill.
 
-@inline T_west_exterior(j, k, grid, clock, fields)  = DW.interpolate_to_grid(T_fts, 1, j, k, T_native, grid, Time(clock.time))
-@inline S_west_exterior(j, k, grid, clock, fields)  = DW.interpolate_to_grid(S_fts, 1, j, k, S_native, grid, Time(clock.time))
-@inline T_south_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(T_fts, i, 1, k, T_native, grid, Time(clock.time))
-@inline S_south_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(S_fts, i, 1, k, S_native, grid, Time(clock.time))
-@inline T_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(T_fts, i, grid.Ny, k, T_native, grid, Time(clock.time))
-@inline S_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(S_fts, i, grid.Ny, k, S_native, grid, Time(clock.time))
+# Host copies of the parent series. On CPU these are the series themselves; on GPU the device series
+# cannot be sampled point by point, so CPU copies are loaded with the same repair.
+function host_series(dev, var, floor)
+    arch isa CPU && return dev
+    f = FieldTimeSeries(restoring_meta(var), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
+    floor === nothing || fill_down_fts!(f, floor)
+    return f
+end
+const T_fts_c = host_series(T_fts, :temperature, 1.0)
+const S_fts_c = host_series(S_fts, :salinity,    5.0)
+const u_fts_c = host_series(u_fts, :u_velocity,  nothing)
+const v_fts_c = host_series(v_fts, :v_velocity,  nothing)
 
 zos_meta = DW.Metadata(:free_surface; dataset = glorys, dates = boundary_dates, region = glorys_region, GLORYS_KW...)
-zos_fts  = FieldTimeSeries(zos_meta, arch;
-                           time_indices_in_memory = n_times,
-                           time_indexing = Oceananigans.OutputReaders.Cyclical(),
-                           inpainting = bc_inpainting)
-zos_native = zos_fts.grid
-@inline zos_at(i, j, grid, t) = DW.interpolate_to_grid(zos_fts, i, j, 1, zos_native, grid, t)
+const zos_fts_c = FieldTimeSeries(zos_meta, CPU();            # only ever sampled on the host now
+                                  time_indices_in_memory = n_times,
+                                  time_indexing = Oceananigans.OutputReaders.Cyclical(),
+                                  inpainting = bc_inpainting)
 
-# Depth-integrated exterior transport for the Flather condition, one per open edge. Velocity is
-# sampled at the boundary FACE index (west i=1, south j=1, north j=Ny+1) and η at the adjacent
-# interior node, matching salish_sea/.
-@inline function west_U_obc(j, k, grid, clock, fields)
-    i = 1; t = Time(clock.time); U = zero(grid)
-    @inbounds for kk in 1:grid.Nz
-        wet = wetcell(i, j, kk, grid, Face(), Center(), Center())
-        U += ifelse(wet, DW.interpolate_to_grid(u_fts, i, j, kk, u_native, grid, t) * Δzᶠᶜᶜ(i, j, kk, grid), zero(grid))
+const BND_TIMES = Float64.(collect(u_fts_c.times))
+const BND_Δt    = BND_TIMES[2] - BND_TIMES[1]
+@assert BND_TIMES[1] == 0 && all(diff(BND_TIMES) .≈ BND_Δt) "boundary kernels assume uniform parent times from t = 0"
+const BND_Nt    = length(BND_TIMES)
+
+function face_array(fts, which, loc_i, loc_j)
+    FT = eltype(interior(fts[1]))
+    na = which === :west ? Ny : Nx
+    A = zeros(FT, na, Nz, BND_Nt)
+    for n in 1:BND_Nt, k in 1:Nz, a in 1:na
+        i, j = which === :west ? (1, a) : which === :south ? (a, 1) : (a, loc_j)
+        A[a, k, n] = DW.interpolate_to_grid(fts, i, j, k, fts.grid, grid_c, Time(BND_TIMES[n]))
     end
-    return (U, zos_at(i, j, grid, t))
+    return on_architecture(arch, A)
 end
 
-@inline function south_V_obc(i, k, grid, clock, fields)
-    j = 1; t = Time(clock.time); V = zero(grid)
+function face_η(which)
+    na = which === :west ? Ny : Nx
+    A = zeros(Float64, na, BND_Nt)
+    for n in 1:BND_Nt, a in 1:na
+        i, j = which === :west ? (1, a) : which === :south ? (a, 1) : (a, Ny)
+        A[a, n] = DW.interpolate_to_grid(zos_fts_c, i, j, 1, zos_fts_c.grid, grid_c, Time(BND_TIMES[n]))
+    end
+    return on_architecture(arch, A)
+end
+
+# Velocity at the boundary FACE index (west i=1, south j=1, north j=Ny+1); tracers and η at the
+# adjacent interior node, matching salish_sea/.
+const pW = (; u = face_array(u_fts_c, :west,  1, 1),    T = face_array(T_fts_c, :west,  1, 1),
+              S = face_array(S_fts_c, :west,  1, 1),    η = face_η(:west),  Δt = BND_Δt, Nt = BND_Nt)
+const pS = (; v = face_array(v_fts_c, :south, 1, 1),    T = face_array(T_fts_c, :south, 1, 1),
+              S = face_array(S_fts_c, :south, 1, 1),    η = face_η(:south), Δt = BND_Δt, Nt = BND_Nt)
+const pN = (; v = face_array(v_fts_c, :north, 1, Ny+1), T = face_array(T_fts_c, :north, 1, Ny),
+              S = face_array(S_fts_c, :north, 1, Ny),   η = face_η(:north), Δt = BND_Δt, Nt = BND_Nt)
+@info @sprintf("Boundary exteriors precomputed: %d parent times at Δt = %.0f s", BND_Nt, BND_Δt)
+
+@inline function bnd_time(t, p)
+    τ = t / p.Δt
+    n = clamp(unsafe_trunc(Int, τ) + 1, 1, p.Nt - 1)
+    return n, clamp(τ - (n - 1), zero(τ), one(τ))
+end
+@inline function face3(A, a, k, t, p)
+    n, w = bnd_time(t, p)
+    @inbounds return (1 - w) * A[a, k, n] + w * A[a, k, n+1]
+end
+@inline function face2(A, a, t, p)
+    n, w = bnd_time(t, p)
+    @inbounds return (1 - w) * A[a, n] + w * A[a, n+1]
+end
+
+@inline u_west_exterior(j, k, grid, clock, fields, p)  = face3(p.u, j, k, clock.time, p)
+@inline v_south_exterior(i, k, grid, clock, fields, p) = face3(p.v, i, k, clock.time, p)
+@inline v_north_exterior(i, k, grid, clock, fields, p) = face3(p.v, i, k, clock.time, p)
+@inline tracer_T_exterior(a, k, grid, clock, fields, p) = face3(p.T, a, k, clock.time, p)
+@inline tracer_S_exterior(a, k, grid, clock, fields, p) = face3(p.S, a, k, clock.time, p)
+
+# Depth-integrated exterior transport for the Flather condition, paired with the parent η.
+@inline function west_U_obc(j, k, grid, clock, fields, p)
+    U = zero(grid)
+    @inbounds for kk in 1:grid.Nz
+        wet = wetcell(1, j, kk, grid, Face(), Center(), Center())
+        U += ifelse(wet, face3(p.u, j, kk, clock.time, p) * Δzᶠᶜᶜ(1, j, kk, grid), zero(grid))
+    end
+    return (U, face2(p.η, j, clock.time, p))
+end
+@inline function south_V_obc(i, k, grid, clock, fields, p)
+    V = zero(grid)
+    @inbounds for kk in 1:grid.Nz
+        wet = wetcell(i, 1, kk, grid, Center(), Face(), Center())
+        V += ifelse(wet, face3(p.v, i, kk, clock.time, p) * Δzᶜᶠᶜ(i, 1, kk, grid), zero(grid))
+    end
+    return (V, face2(p.η, i, clock.time, p))
+end
+@inline function north_V_obc(i, k, grid, clock, fields, p)
+    j = grid.Ny + 1; V = zero(grid)
     @inbounds for kk in 1:grid.Nz
         wet = wetcell(i, j, kk, grid, Center(), Face(), Center())
-        V += ifelse(wet, DW.interpolate_to_grid(v_fts, i, j, kk, v_native, grid, t) * Δzᶜᶠᶜ(i, j, kk, grid), zero(grid))
+        V += ifelse(wet, face3(p.v, i, kk, clock.time, p) * Δzᶜᶠᶜ(i, j, kk, grid), zero(grid))
     end
-    return (V, zos_at(i, j, grid, t))
+    return (V, face2(p.η, i, clock.time, p))
 end
 
-@inline function north_V_obc(i, k, grid, clock, fields)
-    j = grid.Ny + 1; t = Time(clock.time); V = zero(grid)
-    @inbounds for kk in 1:grid.Nz
-        wet = wetcell(i, j, kk, grid, Center(), Face(), Center())
-        V += ifelse(wet, DW.interpolate_to_grid(v_fts, i, j, kk, v_native, grid, t) * Δzᶜᶠᶜ(i, j, kk, grid), zero(grid))
-    end
-    return (V, zos_at(i, grid.Ny, grid, t))
-end
+nf(f, p) = NormalFlowBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
+vb(f, p) = ValueBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
+gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parameters = p)
 
-u_bcs = FieldBoundaryConditions(west  = NormalFlowBoundaryCondition(u_west_exterior;  scheme = radiation, discrete_form = true))
-v_bcs = FieldBoundaryConditions(south = NormalFlowBoundaryCondition(v_south_exterior; scheme = radiation, discrete_form = true),
-                                north = NormalFlowBoundaryCondition(v_north_exterior; scheme = radiation, discrete_form = true))
-U_bcs = FieldBoundaryConditions(grid, (Face(), Center(), nothing);
-                                west  = GravityWaveRadiationBoundaryCondition(west_U_obc;  discrete_form = true))
-V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);
-                                south = GravityWaveRadiationBoundaryCondition(south_V_obc; discrete_form = true),
-                                north = GravityWaveRadiationBoundaryCondition(north_V_obc; discrete_form = true))
+u_bcs = FieldBoundaryConditions(west = nf(u_west_exterior, pW))
+v_bcs = FieldBoundaryConditions(south = nf(v_south_exterior, pS), north = nf(v_north_exterior, pN))
+U_bcs = FieldBoundaryConditions(grid, (Face(), Center(), nothing);  west  = gw(west_U_obc, pW))
+V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(south_V_obc, pS),
+                                                                    north = gw(north_V_obc, pN))
 # Chapman: radiates interior η outward and never reads an exterior value. Present so the barotropic
 # mode is well posed, not to impose anything -- see the recipe.
 η_bcs = FieldBoundaryConditions(grid, (Center(), Center(), Face());
                                 west  = SurfaceWaveRadiationBoundaryCondition(),
                                 south = SurfaceWaveRadiationBoundaryCondition(),
                                 north = SurfaceWaveRadiationBoundaryCondition())
-T_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(T_west_exterior;  scheme = radiation, discrete_form = true),
-                                south = ValueBoundaryCondition(T_south_exterior; scheme = radiation, discrete_form = true),
-                                north = ValueBoundaryCondition(T_north_exterior; scheme = radiation, discrete_form = true))
-S_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(S_west_exterior;  scheme = radiation, discrete_form = true),
-                                south = ValueBoundaryCondition(S_south_exterior; scheme = radiation, discrete_form = true),
-                                north = ValueBoundaryCondition(S_north_exterior; scheme = radiation, discrete_form = true))
+T_bcs = FieldBoundaryConditions(west  = vb(tracer_T_exterior, pW), south = vb(tracer_T_exterior, pS),
+                                north = vb(tracer_T_exterior, pN))
+S_bcs = FieldBoundaryConditions(west  = vb(tracer_S_exterior, pW), south = vb(tracer_S_exterior, pS),
+                                north = vb(tracer_S_exterior, pN))
 
 # --- Tracer release forcing and boundaries ------------------------------------
 # Release volume is measured on the grid so the source can be normalised; a continuous-form forcing
@@ -323,9 +381,9 @@ S_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(S_west_exterior; 
 # In a function, not a top-level loop: accumulating into a global from inside `for` hits Julia's
 # soft-scope rule and fails with UndefVarError.
 function compute_release_volume()
-    λc = λnodes(grid, Center(), Center(), Center())
-    φc = φnodes(grid, Center(), Center(), Center())
-    zc = znodes(grid, Center(), Center(), Center())
+    λc = λnodes(grid_c, Center(), Center(), Center())
+    φc = φnodes(grid_c, Center(), Center(), Center())
+    zc = znodes(grid_c, Center(), Center(), Center())
     V = 0.0
     for k in 1:Nz, j in 1:Ny, i in 1:Nx
         wetcell(i, j, k, grid_c, Center(), Center(), Center()) || continue
@@ -410,14 +468,6 @@ end
 # On GPU the restoring series live on the device and this samples them point by point, which the
 # device disallows -- so CPU copies are loaded for the purpose, with the same fill_down! repair. They
 # are only needed at setup and cost a few tens of MB. On CPU the existing series are reused.
-function cpu_parent(var, floor_value)
-    f = FieldTimeSeries(restoring_meta(var), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
-    fill_down_fts!(f, floor_value)
-    return f
-end
-T_fts_c = arch isa CPU ? T_fts : cpu_parent(:temperature, 1.0)
-S_fts_c = arch isa CPU ? S_fts : cpu_parent(:salinity,    5.0)
-
 function ic_array(fts, native_grid, t)
     a = zeros(eltype(interior(fts[1])), Nx, Ny, Nz)
     @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
@@ -431,11 +481,6 @@ set!(ocean.model.tracers.S, ic_array(S_fts_c, S_fts_c.grid, Time(0.0)))
 
 free_surface_field(fs) = hasproperty(fs, :η) ? fs.η : fs.displacement
 η_field = free_surface_field(ocean.model.free_surface)
-# zos_fts itself must stay on the device -- the Flather closures sample it there. Building η samples
-# it point by point on the host instead, so that needs a host copy.
-zos_fts_c = arch isa CPU ? zos_fts :
-    FieldTimeSeries(zos_meta, CPU(); time_indices_in_memory = n_times,
-                    time_indexing = Oceananigans.OutputReaders.Cyclical(), inpainting = bc_inpainting)
 let t₀ = Time(0.0)
     ηa = zeros(Nx, Ny, 1)
     for j in 1:Ny, i in 1:Nx
@@ -455,9 +500,9 @@ end
 ocean_model_of(m) = hasproperty(m, :ocean) ? (hasproperty(m.ocean, :model) ? m.ocean.model : m.ocean) : m
 
 # --- Diagnostics --------------------------------------------------------------
-z_centers = znodes(grid, Center(), Center(), Center())
-λ_centers = λnodes(grid, Center(), Center(), Center())
-φ_centers = φnodes(grid, Center(), Center(), Center())
+z_centers = znodes(grid_c, Center(), Center(), Center())
+λ_centers = λnodes(grid_c, Center(), Center(), Center())
+φ_centers = φnodes(grid_c, Center(), Center(), Center())
 
 @info @sprintf("Δz near surface: %s m (top of %d levels, domain %.0f m)",
                join((@sprintf("%.1f", d) for d in reverse(diff(z_centers))[1:min(6, Nz-1)]), ", "), Nz, depth)
@@ -521,8 +566,6 @@ end
 # SECTION AREAS at their rest state, and under z* those breathe with the free surface. That shifted
 # the diagnostic by a few tenths of a percent against the validated baseline. Host copies of the
 # parent series keep this off the device without changing what is measured.
-u_fts_c = arch isa CPU ? u_fts : FieldTimeSeries(restoring_meta(:u_velocity), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
-v_fts_c = arch isa CPU ? v_fts : FieldTimeSeries(restoring_meta(:v_velocity), CPU(); time_indices_in_memory = n_times, inpainting = bc_inpainting)
 
 function glorys_residuals(t)
     W = S_ = N = 0.0

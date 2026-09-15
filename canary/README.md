@@ -408,6 +408,24 @@ does **not** prove the GPU path works — there is no CUDA on the development ma
 `CANARY_ARCH=GPU` is unexercised. Every construct GPU rejects has been removed from the host paths,
 but the first real GPU run may still surface something.
 
+**Boundary exteriors are precomputed, not sampled in the kernels.** The first GPU attempts never
+reached a timestep: compiling the boundary-condition halo fills sent the CUDA compiler's inliner past
+31 GB, because the kernels called `interpolate_to_grid` on NumericalEarth series with deeply parametric
+types. The parent is now interpolated onto the three boundary faces once at setup, into
+(face × depth × time) arrays passed as boundary-condition `parameters` and interpolated linearly in
+time in the kernel.
+
+With a static vertical grid this is **exactly** equivalent to the old sampling (identical output over
+11 diagnostic blocks, old vs new, `CANARY_ZSTAR=0`). Under z\* it is not: the old kernels sampled the
+parent at depths displaced by the free surface each step, the precomputed arrays sample at rest-state
+depths. That moves boundary transports by 0.1–0.9% and salt drift by ~0.1% on the 0.1° smoke test —
+small against the parent residual the boundary already absorbs, so accepted rather than corrected.
+Runs before this change are therefore not bitwise comparable with runs after it.
+
+Two smaller GPU requirements, both now in the script: `using CUDA` must actually execute (Oceananigans
+defines `GPU()` in its CUDA extension, so having CUDA in the project is not enough), and globals read
+inside kernels — the sponge edges, the release geometry — must be `const`.
+
 One thing was tried and reverted: precomputing the GLORYS residual at setup and interpolating in time.
 The parent's time interpolation is exactly linear (verified pointwise to ~1e-13), so that part was
 sound — but precomputing also froze the **section areas** at their rest state, and under z\* those
