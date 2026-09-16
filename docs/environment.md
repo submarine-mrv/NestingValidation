@@ -109,6 +109,13 @@ cache (a cleanup step failed before the snapshot); rebuild from a cleaned disk i
             --file-cache-cache-file-for-range-read <forcing-bucket> /mnt/forcing-cache
     CANARY_GLORYS_DIR=/mnt/obs/glorys  CANARY_JRA55_DIR=/mnt/forcing-cache/jra55-ryf
 
+**Staging GLORYS for a bucket run.** Stage `run_days + margin_days + 1` dates, not `run_days`:
+`boundary_dates` runs to `run_start + Day(run_days + margin_days)` *inclusive*, so a 90-day run needs
+93 daily files. A short window fails at startup with a `copernicusmarine subset` process error,
+because the VM falls through to downloading and has no Copernicus credentials. Upload the
+`_inpainted.jld2` files alongside the `.nc` — otherwise the VM inpaints every field itself, through
+the mount.
+
 Canary GLORYS (both windows, 288 MB) was uploaded to `<obs-bucket>/glorys/`; JRA55 RYF was
 already in `<forcing-bucket>/jra55-ryf/`. Measured: on first load mount vs local copy
 differs only by noise (compile time dominates); on JRA55 window reloads a plain mount is 17% slower

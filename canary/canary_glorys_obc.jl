@@ -1001,9 +1001,9 @@ simulation.output_writers[:north_section] = JLD2Writer(ocean.model, output_field
 simulation.output_writers[:north_face_v] = JLD2Writer(ocean.model, (; v = ocean.model.velocities.v);
     schedule = output_schedule, overwrite_existing = true, indices = (:, Ny+1, :), filename = out("north_face_v"))
 
-# Daily 3-D snapshot (~83 MB/frame, ~0.6 GB for 7 days). Cheap against the cost of re-running to
-# answer a question this run could already have answered: interior sections, water-mass
-# transformation, volume-integrated budgets.
+# 3-D snapshot every CANARY_SNAPSHOT_HOURS (~83 MB/frame at 0.02 deg, so ~2.5 GB for 90 days at 72 h).
+# Cheap against the cost of re-running to answer a question this run could already have answered:
+# interior sections, water-mass transformation, volume-integrated budgets.
 simulation.output_writers[:snapshot3d] = JLD2Writer(ocean.model, output_fields;
     schedule = TimeInterval(snapshot_hours * hours), overwrite_existing = true, filename = out("snapshot3d"))
 
