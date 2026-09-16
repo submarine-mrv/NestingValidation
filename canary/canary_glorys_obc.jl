@@ -14,7 +14,9 @@
 
 using CairoMakie
 using Oceananigans
-using Oceananigans.Architectures: on_architecture
+using Oceananigans.Architectures: on_architecture, architecture
+using Oceananigans.TimeSteppers: update_state!
+const JLD2 = Oceananigans.OutputReaders.JLD2
 using NumericalEarth
 using CopernicusMarine
 using Oceananigans.Advection: cell_advection_timescale
@@ -157,8 +159,12 @@ isempty(jra55_dir)  || @info "JRA55 dir:  $jra55_dir"
 use_tracer  = get(ENV, "CANARY_TRACER", "0") == "1"
 const λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",   "-15.38"))
 const φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",    "28.16"))
-const R_release   = parse(Float64, get(ENV, "CANARY_RELEASE_R",       "0.05"))   # degrees, ~5 km
-const D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "20.0"))    # metres below surface
+# Sharp 2-D Gaussian at the surface: σ = 0.02° is one grid cell at the 0.02° target (1.98 km
+# zonal, 2.22 km meridional), so the source spans a few cells and is cut off at 3σ. The depth
+# covers the top cell only (1.21 m at CANARY_ZSCALE=700), i.e. a surface release.
+const σ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_SIGMA", "0.02"))     # degrees
+const R_release   = 3σ_release                                                    # hard cutoff
+const D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "1.5"))     # metres below surface
 
 # --- Boundary conditions ------------------------------------------------------
 using Oceananigans.BoundaryConditions: NormalRadiation,
@@ -384,18 +390,28 @@ S_bcs = FieldBoundaryConditions(west  = vb(tracer_S_exterior, pW), south = vb(tr
 # (a pure function of x, y, z, t) is used rather than a masked array so the same code runs on GPU.
 # In a function, not a top-level loop: accumulating into a global from inside `for` hits Julia's
 # soft-scope rule and fails with UndefVarError.
+@inline function release_weight(x, y, z)
+    dx = (x - λ_release) * cosd(φ_release)
+    dy = y - φ_release
+    r2 = dx*dx + dy*dy
+    inside = (r2 < R_release^2) & (z > -D_release)
+    return ifelse(inside, exp(-r2 / (2 * σ_release^2)), zero(x))
+end
+
+# ∫ w dV over the release patch, so the source can be normalised to exactly 1 unit/s.
 function compute_release_volume()
     λc = λnodes(grid_c, Center(), Center(), Center())
     φc = φnodes(grid_c, Center(), Center(), Center())
     zc = znodes(grid_c, Center(), Center(), Center())
-    V = 0.0
+    V = 0.0; ncell = 0
     for k in 1:Nz, j in 1:Ny, i in 1:Nx
         wetcell(i, j, k, grid_c, Center(), Center(), Center()) || continue
-        dx = (λc[i] - λ_release) * cosd(φ_release)
-        dy = φc[j] - φ_release
-        (dx*dx + dy*dy < R_release^2 && zc[k] > -D_release) || continue
-        V += Vᶜᶜᶜ(i, j, k, grid_c)
+        w = release_weight(λc[i], φc[j], zc[k])
+        w > 0 || continue
+        V += w * Vᶜᶜᶜ(i, j, k, grid_c); ncell += 1
     end
+    @info @sprintf("Release patch: %d wet cells within 3σ (σ = %.3f° ≈ %.1f km), top %.1f m",
+                   ncell, σ_release, σ_release * 111.32 * cosd(φ_release), D_release)
     return V
 end
 
@@ -403,18 +419,12 @@ release_volume = use_tracer ? compute_release_volume() : 0.0
 if use_tracer
     release_volume <= 0 ?
         @warn("Release site ($(λ_release), $(φ_release)) contains NO wet cells -- tracer will never enter the domain") :
-        @info @sprintf("Tracer release at %.3fE %.3fN, r=%.3f deg, top %.0f m: volume %.4e m³",
-                       λ_release, φ_release, R_release, D_release, release_volume)
+        @info @sprintf("Tracer release at %.3fE %.3fN: ∫w dV = %.4e m³", λ_release, φ_release, release_volume)
 end
 
 const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV = 1 unit/s
 
-@inline function c_source(x, y, z, t)
-    dx = (x - λ_release) * cosd(φ_release)
-    dy = y - φ_release
-    inside = (dx*dx + dy*dy < R_release^2) & (z > -D_release)
-    return ifelse(inside, RELEASE_RATE, zero(x))
-end
+@inline c_source(x, y, z, t) = RELEASE_RATE * release_weight(x, y, z)
 
 # Zero exterior at every open boundary: there is no released tracer outside the domain, so this lets
 # it leave freely. A default no-flux condition would trap it and make residence time meaningless.
@@ -890,9 +900,67 @@ end
 add_callback!(simulation, progress, IterationInterval(parse(Int, get(ENV, "CANARY_PROGRESS_ITERS", "10"))))
 
 # --- Spin-up then the run -----------------------------------------------------
-simulation.Δt = 10
-simulation.stop_iteration = 100
-run!(simulation)
+tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
+      (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
+      (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") * get(ENV, "CANARY_TAG", "")
+
+# Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises
+# whatever model the simulation holds, which here is the coupled EarthSystemModel, and neither
+# `checkpointer_address` nor `set!` has a method for it. The state is all there, so read it directly.
+# Not restored: timestepper tendencies (the checkpoint stores none), so the first step after a restart
+# is effectively first-order -- one step per restart, negligible over months.
+function restore_ocean_state!(model, path)
+    om = "simulation/model/ocean/model"
+    JLD2.jldopen(path, "r") do file
+        load(f, key) = copyto!(parent(f), on_architecture(architecture(model), file["$om/$key/data"]))
+        for name in (:u, :v, :w)
+            load(getproperty(model.velocities, name), "velocities/$name")
+        end
+        for name in keys(model.tracers)
+            string(name) in keys(file["$om/tracers"]) ?
+                load(model.tracers[name], "tracers/$name") :
+                @warn "checkpoint has no tracer $name -- left at its initial condition"
+        end
+        fs = model.free_surface
+        load(free_surface_field(fs), "free_surface/displacement")
+        if hasproperty(fs, :barotropic_velocities)
+            load(fs.barotropic_velocities.U, "free_surface/barotropic_velocities/U")
+            load(fs.barotropic_velocities.V, "free_surface/barotropic_velocities/V")
+        end
+        ck = file["$om/clock"]
+        model.clock.time, model.clock.iteration, model.clock.last_Δt = ck.time, ck.iteration, ck.last_Δt
+    end
+    update_state!(model)
+    return nothing
+end
+
+# Restart. The checkpointer writes the OCEAN model, while `simulation` wraps the coupled model, so
+# `run!(pickup=true)` would target the wrong object: restore the ocean model explicitly and carry its
+# clock over to the coupled model. CANARY_PICKUP=auto takes the newest checkpoint for this tag.
+pickup_request = get(ENV, "CANARY_PICKUP", "")
+pickup_file = if pickup_request == "auto"
+    cands = filter(f -> startswith(basename(f), "canary_checkpoint$(tag)_iteration") && endswith(f, ".jld2"),
+                   readdir(@__DIR__, join = true))
+    isempty(cands) ? "" : sort(cands, by = mtime)[end]
+else
+    pickup_request
+end
+
+if isempty(pickup_file)
+    simulation.Δt = 10
+    simulation.stop_iteration = 100
+    run!(simulation)
+else
+    isfile(pickup_file) || error("CANARY_PICKUP file not found: $pickup_file")
+    restore_ocean_state!(ocean.model, pickup_file)
+    t0, it0 = ocean.model.clock.time, ocean.model.clock.iteration
+    if use_atmos     # the coupled model keeps its own clock; without this the run restarts at t = 0
+        simulation.model.clock.time = t0
+        simulation.model.clock.iteration = it0
+    end
+    simulation.Δt = ocean.model.clock.last_Δt
+    @info @sprintf("Picked up from %s: t = %s, iteration %d", basename(pickup_file), prettytime(t0), it0)
+end
 
 ocean_timescale(model) = cell_advection_timescale(ocean_model_of(model))
 wizard = TimeStepWizard(; cfl = 0.15, max_Δt = 15minutes, max_change = 1.1, cell_advection_timescale = ocean_timescale)
@@ -907,9 +975,6 @@ output_hours   = parse(Float64, get(ENV, "CANARY_OUTPUT_HOURS", "6"))
 snapshot_hours = parse(Float64, get(ENV, "CANARY_SNAPSHOT_HOURS", "24"))
 output_schedule = TimeInterval(output_hours * hours)
 @info @sprintf("Output: sections every %.1f h, 3-D snapshots every %.1f h", output_hours, snapshot_hours)
-tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
-      (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
-      (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") * get(ENV, "CANARY_TAG", "")
 out(name) = joinpath(@__DIR__, "canary_glorys_$(name)$(tag)")
 
 simulation.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
@@ -944,8 +1009,12 @@ simulation.output_writers[:snapshot3d] = JLD2Writer(ocean.model, output_fields;
 
 simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
     schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
+# One checkpoint on disk at a time (cleanup), so a months-long run can be resumed after a crash or a
+# deliberate stop without accumulating ~560 MB files. CANARY_CHECKPOINT_DAYS sets the cadence.
+checkpoint_days = parse(Float64, get(ENV, "CANARY_CHECKPOINT_DAYS", "10"))
 simulation.output_writers[:checkpointer] = Checkpointer(ocean.model;
-    schedule = TimeInterval(12hours), dir = @__DIR__, prefix = "canary_checkpoint$(tag)",
+    schedule = TimeInterval(checkpoint_days * days), dir = @__DIR__, prefix = "canary_checkpoint$(tag)",
     overwrite_existing = true, cleanup = true)
+@info @sprintf("Checkpoint every %.1f days -> %s", checkpoint_days, "canary_checkpoint$(tag)_iteration*.jld2")
 
 run!(simulation)

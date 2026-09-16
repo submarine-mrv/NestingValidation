@@ -345,7 +345,7 @@ in a narrow coastal strip along the upwelling front — visible in the animation
 
 ![July surface](canary_surface_day7_zstar_jraryf_jul.png)
 
-## Passive tracer release (implemented, not yet run in production)
+## Passive tracer release
 
 `CANARY_TRACER=1` adds a continuous point release for pathway and residence-time work — the kind an
 ocean alkalinity enhancement outfall would represent.
@@ -363,7 +363,8 @@ since surface contact, not time since release.
 | | |
 |---|---|
 | default site | Las Palmas, **−15.38°E, 28.16°N** — wet, 535 m, 47 of 49 neighbouring cells wet, the island's main port |
-| release volume | 1.92e9 m³ (5 km radius, top 20 m) |
+| shape | **2-D Gaussian at the surface**, σ = 0.02° (`CANARY_RELEASE_SIGMA`) — one grid cell at 0.02° (1.98 km zonal, 2.22 km meridional) — cut off at 3σ |
+| depth | top model cell only, 1.5 m (`CANARY_RELEASE_DEPTH`); the top cell is 1.21 m thick |
 | source | normalised to **∫S dV = 1 unit/s**, so cumulative input equals elapsed seconds |
 | boundaries | **zero-value at all three open edges** — the default no-flux would trap tracer and make residence time meaningless |
 
@@ -463,6 +464,30 @@ The parent's time interpolation is exactly linear (verified pointwise to ~1e-13)
 sound — but precomputing also froze the **section areas** at their rest state, and under z\* those
 breathe with the free surface. It shifted the diagnostic by a few tenths of a percent against the
 validated baseline, so it is computed live on host copies instead.
+
+## Long runs: output cadence, checkpoints and restarts
+
+| flag | default | |
+|---|---|---|
+| `CANARY_OUTPUT_HOURS` | 6 | surface **and** boundary sections (they share a schedule) |
+| `CANARY_SNAPSHOT_HOURS` | 24 | 3-D snapshots — the volume driver, ~230 MB/frame at 0.02° |
+| `CANARY_PROGRESS_ITERS` | 10 | `progress` copies every 3-D field to the host and loops over all wet cells |
+| `CANARY_CHECKPOINT_DAYS` | 10 | one checkpoint kept at a time (`cleanup`), ~560 MB at 0.02° |
+| `CANARY_PICKUP` | — | `auto` takes the newest checkpoint for this tag, or give a path |
+
+**Restarts need a custom reader, and the reason is a trap.** `Checkpointer(ocean.model; …)` does *not*
+checkpoint the ocean model: the writer serialises whatever model its simulation holds, which here is the
+coupled `EarthSystemModel`. Oceananigans' `set!(model, filepath)` then cannot read it —
+`checkpointer_address` and `set!` have no methods for that type, and NumericalEarth adds none — so both
+`run!(pickup=true)` and `set!(ocean.model, file)` fail. `restore_ocean_state!` reads the file directly
+(velocities, all tracers including `c` and `ac`, free-surface displacement and barotropic velocities, the
+clock) and carries the clock across to the coupled model.
+
+Verified at 0.1°: a run checkpointed at iteration 104 (t = 17.28 min) resumed there, continued with
+fields unchanged (max|u| 0.126 against 0.127 before the stop) and the tracer intact (inventory 100.01% of
+released, mean age preserved). **Not restored: timestepper tendencies** — the checkpoint contains none, so
+the first step after a restart is first-order rather than second. One step per restart is negligible over
+months, but a restarted run is not bitwise identical to an uninterrupted one.
 
 ## Status and what is untested
 
