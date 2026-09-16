@@ -885,7 +885,9 @@ function progress(sim)
     flush(stderr)
     return nothing
 end
-add_callback!(simulation, progress, IterationInterval(10))
+# progress copies every 3-D field to the host and loops over all wet cells, so it is worth thinning
+# for long runs (CANARY_PROGRESS_ITERS).
+add_callback!(simulation, progress, IterationInterval(parse(Int, get(ENV, "CANARY_PROGRESS_ITERS", "10"))))
 
 # --- Spin-up then the run -----------------------------------------------------
 simulation.Δt = 10
@@ -899,7 +901,12 @@ simulation.stop_iteration = Inf
 simulation.stop_time = parse(Float64, get(ENV, "CANARY_STOP_DAYS", string(run_days))) * days
 
 output_fields   = merge(ocean.model.velocities, ocean.model.tracers)
-output_schedule = TimeInterval(6hours)
+# Output cadence. 6-hourly suits a 7-day run; a months-long tracer run wants daily or coarser, since
+# volume scales with run length (CANARY_OUTPUT_HOURS, CANARY_SNAPSHOT_HOURS for the 3-D snapshots).
+output_hours   = parse(Float64, get(ENV, "CANARY_OUTPUT_HOURS", "6"))
+snapshot_hours = parse(Float64, get(ENV, "CANARY_SNAPSHOT_HOURS", "24"))
+output_schedule = TimeInterval(output_hours * hours)
+@info @sprintf("Output: sections every %.1f h, 3-D snapshots every %.1f h", output_hours, snapshot_hours)
 tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
       (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") * get(ENV, "CANARY_TAG", "")
@@ -933,7 +940,7 @@ simulation.output_writers[:north_face_v] = JLD2Writer(ocean.model, (; v = ocean.
 # answer a question this run could already have answered: interior sections, water-mass
 # transformation, volume-integrated budgets.
 simulation.output_writers[:snapshot3d] = JLD2Writer(ocean.model, output_fields;
-    schedule = TimeInterval(24hours), overwrite_existing = true, filename = out("snapshot3d"))  # 24hours, not 1day: Oceananigans.Units and Dates both export `day`
+    schedule = TimeInterval(snapshot_hours * hours), overwrite_existing = true, filename = out("snapshot3d"))
 
 simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
     schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))

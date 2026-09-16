@@ -402,6 +402,13 @@ measure z\* drift and would then report ≈0 regardless of what z\* actually did
 plausible-looking wrong answer on a months-long run, not a crash. The sync copies the z\* state
 host-ward once per block and is a no-op on CPU.
 
+**Cost at the target resolution.** 0.02° (575 × 225 × 32, 2.6 M wet cells) runs at **1.8 s/iter** on an
+L4 using **2.95 GB** of GPU memory — so memory is not a constraint and a larger grid or a second tracer
+would fit. With Δt settling at 1.4–4.5 min, a 3-month tracer run is **~15–22 h** (≈ $13–19 at
+g2-standard-8 rates). Output at 0.02°: a 3-D snapshot is ~230 MB per frame (daily over 3 months ≈ 21 GB,
+every 3 days ≈ 7 GB); 6-hourly surface + boundary sections over 3 months are ~3 GB together.
+`CANARY_OUTPUT_HOURS`, `CANARY_SNAPSHOT_HOURS` and `CANARY_PROGRESS_ITERS` set the cadences.
+
 **Verified on GPU, against CPU.** The full configuration — JRA55 atmosphere, tracer release, three
 open boundaries, nudging, z\* — runs on an NVIDIA L4 and matches a CPU run of the same configuration in
 every model-state diagnostic over 16 blocks at 0.1°: velocities, η, T and S ranges, layered boundary
@@ -470,7 +477,8 @@ test. Not yet established:
 - **The tracer release has not been run in production**, only verified. It needs a GPU run of weeks to
   months to answer the residence-time question.
 - ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. The full configuration runs on
-  an L4 and matches CPU. **0.02° has not yet been run on GPU**, so its speed and GPU memory are unmeasured.
+  an L4 and matches CPU at 0.1°, and runs at 0.02° (**1.8 s/iter, 2.95 GB of the L4's 24 GB**).
+- **GPU/CPU equivalence was checked at 0.1°, not at 0.02°** — a CPU run at the finer grid costs ~39 h.
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
   Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
   strong case, and the domain's own signal will be clearer there.
