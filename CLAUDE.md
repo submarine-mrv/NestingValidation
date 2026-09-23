@@ -36,5 +36,8 @@ parent product.
 - `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
   why the domain boundaries sit where they do, and known limitations.
 - `docs/environment.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, run cost.
+- `docs/canary-domain-sizing.md` — how far south the Canary domain must reach: the virtual-boundary
+  method, retention over 73-268 km, the tau(L) fit, and why extending south past 22.8N is wasted
+  unless the west boundary moves too.
 - `red_sea/README.md` — that domain’s verified geometry, the GLORYS depth checks (boundary *and*
   interior, the latter via `red_sea/glorys_interior_check.jl`), and what is untested.

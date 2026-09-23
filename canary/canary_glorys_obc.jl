@@ -61,7 +61,10 @@ boundary_dates = run_start : Day(1) : (run_start + Day(run_days + margin_days))
 # against 719 km² for the Red Sea.
 # const: read inside GPU kernels (sponge mask), where non-const globals cannot be compiled.
 const λ₁, λ₂ = (-21.5, -10.0)
-const φ₁, φ₂ = ( 25.0,  29.5)
+# CANARY_PHI_S extends the domain south for the domain-sizing experiments. At 22.0 the release sits
+# 685 km from the south edge but only 600 km from the WEST edge, so west becomes the nearest open
+# boundary and the dominant tracer leak -- see docs/canary-domain-sizing.md.
+const φ₁, φ₂ = (parse(Float64, get(ENV, "CANARY_PHI_S", "25.0")), 29.5)
 
 # 0.02 deg = 2.06 km at 27.25N, 575 x 225 x 32 = 4.1M cells, i.e. about the Red Sea's cost per step.
 # 0.01 deg (1.03 km) is the target for resolving island wakes and the upwelling filaments, but at
@@ -127,8 +130,11 @@ function sync_grid_c!()
 end
 
 # Fixed subset so resolution changes do not invalidate the download cache.
-glorys_region = DW.BoundingBox(longitude = (-22.0, -9.5), latitude = (24.5, 30.0))
-@assert λ₁ >= -22.0 && λ₂ <= -9.5 && φ₁ >= 24.5 && φ₂ <= 30.0 "domain outside glorys_region"
+# The parent box follows the domain with a 0.5 deg margin. Its extent is part of every cached
+# filename, so changing φ₁ means a fresh download -- nothing already staged is reusable.
+const φ_glorys_S = φ₁ - 0.5
+glorys_region = DW.BoundingBox(longitude = (-22.0, -9.5), latitude = (φ_glorys_S, 30.0))
+@assert λ₁ >= -22.0 && λ₂ <= -9.5 && φ₁ >= φ_glorys_S && φ₂ <= 30.0 "domain outside glorys_region"
 glorys = DW.GLORYSDaily()
 
 # Where the parent data lives. Unset (the default) falls back to NumericalEarth's own download cache,
@@ -444,8 +450,23 @@ tracer_bc_pair = use_tracer ? (; c = tracer_bcs(), ac = tracer_bcs()) : (;)
 
 # --- Ocean simulation ---------------------------------------------------------
 weno_order = parse(Int, get(ENV, "CANARY_WENO_ORDER", "7"))
-tracer_advection = WENO(order = weno_order,
-                        time_discretization = AdaptiveVerticallyImplicitDiscretization(cfl = 0.5))
+weno_kw = (; time_discretization = AdaptiveVerticallyImplicitDiscretization(cfl = 0.5))
+weno_scheme = WENO(order = weno_order; weno_kw...)
+# CANARY_TRACER_BOUNDS=1 gives the release tracers bound-preserving WENO, to fix the c < 0 undershoot
+# in the dilute plume edge (6.8% of surface cells at day 90) that makes the pointwise age ac/c
+# meaningless there. OFF by default: in Oceananigans 0.110.17 that path is NON-CONSERVATIVE under z*,
+# creating tracer at +25%/day against +0.07% for plain WENO -- see docs/canary-domain-sizing.md.
+# T and S must stay unbounded: 0 is not a physical floor for either.
+# NOTE: a NamedTuple here defaults any UNNAMED tracer to CenteredSecondOrder, so every tracer in
+# `tracer_names` must appear below.
+# Only the LOWER bound is physical; the upper is Inf because ac is a concentration-time product that
+# any finite cap would clip. bounds must be a homogeneous NTuple{2}: (0, Inf) is Tuple{Int,Float64}
+# and is rejected.
+positive_weno = WENO(order = weno_order; bounds = (0.0, Inf), weno_kw...)
+use_bounds = get(ENV, "CANARY_TRACER_BOUNDS", "0") == "1"
+release_advection = use_bounds ? positive_weno : weno_scheme
+tracer_advection = use_tracer ?
+    (; T = weno_scheme, S = weno_scheme, c = release_advection, ac = release_advection) : weno_scheme
 
 ocean = ocean_simulation(grid;
                          tracers = tracer_names,
@@ -619,6 +640,9 @@ end
 const k_src = argmin(abs.(z_centers .+ 100))     # ~100 m, the source depth for coastal upwelling
 # Bands are defined in DEGREES and converted to cells, not fixed cell counts: a hard-coded 150-cell
 # offshore offset silently exceeded the grid_c width at 0.1° and returned NaN for every row.
+# Both upwelling indices are restricted to φ >= 25.0 so the number stays comparable when the domain
+# is extended south: otherwise a larger domain silently averages in the Cape Bojador upwelling too.
+const J_UPW_MIN   = something(findfirst(>=(25.0), φ_centers), 1)
 const N_COAST     = max(1, round(Int, 0.50 / Δdeg))   # ~50 km inshore band
 const N_OFFSHORE  = round(Int, 3.00 / Δdeg)           # reference centred ~300 km offshore
 const N_OFF_HALF  = max(1, round(Int, 0.25 / Δdeg))   # ~25 km half-width on that reference
@@ -627,7 +651,7 @@ const i_coast = [findlast(i -> wet3d[i, j, Nz], 1:Nx) for j in 1:Ny]
 
 function upwelling_index(T)
     cT = oT = sT = 0.0; nc = no = ns = 0
-    @inbounds for j in 1:Ny
+    @inbounds for j in J_UPW_MIN:Ny
         ic = i_coast[j]
         ic === nothing && continue
         for i in max(1, ic-N_COAST+1):ic
@@ -650,7 +674,7 @@ end
 # Original fixed-longitude definition, kept only so the January run stays comparable.
 function upwelling_index_fixedλ(T)
     cT = oT = 0.0; nc = no = 0
-    @inbounds for j in 1:Ny, i in 1:Nx
+    @inbounds for j in J_UPW_MIN:Ny, i in 1:Nx
         wet3d[i, j, Nz] || continue
         λi = λ_centers[i]
         if λi > -13.5;              cT += T[i, j, Nz]; nc += 1
@@ -902,7 +926,8 @@ add_callback!(simulation, progress, IterationInterval(parse(Int, get(ENV, "CANAR
 # --- Spin-up then the run -----------------------------------------------------
 tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
-      (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") * get(ENV, "CANARY_TAG", "")
+      (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
+      (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * get(ENV, "CANARY_TAG", "")
 
 # Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises
 # whatever model the simulation holds, which here is the coupled EarthSystemModel, and neither

@@ -499,8 +499,15 @@ test. Not yet established:
 - ~~The GLORYS residual is untested against the no-correction decision.~~ **Done** — 99.2% absorbed.
 - ~~July is not run.~~ **Done** — the domain's headline signal is confirmed: 15× more sharpening than
   January.
-- **The tracer release has not been run in production**, only verified. It needs a GPU run of weeks to
-  months to answer the residence-time question.
+- ~~The tracer release has not been run in production.~~ **Done** — 90 days at 0.02° on GPU, 13.6 h
+  wall, **88.8% of the release still in the domain at day 90**, ~81% of the loss through the south
+  boundary. Residence timescales and the domain-size implications are in
+  `../docs/canary-domain-sizing.md`.
+- **A domain-sizing run has not happened.** `CANARY_PHI_S` extends the domain south, but every
+  retention number so far comes from *virtual* boundaries inside the existing run and is an upper
+  bound. A real run at `CANARY_PHI_S=22.0` would both measure that bias and extend the fitted range
+  from 270 km to ~690 km. Note it invalidates the whole GLORYS cache (the parent box follows the
+  domain), and that south of ~22.8°N the **west** boundary becomes the nearest one.
 - ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. The full configuration runs on
   an L4 and matches CPU at 0.1°, and runs at 0.02° (**1.8 s/iter, 2.95 GB of the L4's 24 GB**).
 - **GPU/CPU equivalence was checked at 0.1°, not at 0.02°** — a CPU run at the finer grid costs ~39 h.

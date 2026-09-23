@@ -24,7 +24,7 @@ arch = CPU()
 check_date = DateTime(get(ENV, "CANARY_START", "1993-01-01"))
 
 λ₁, λ₂ = (-21.5, -10.0)
-φ₁, φ₂ = ( 25.0,  29.5)
+φ₁, φ₂ = (parse(Float64, get(ENV, "CANARY_PHI_S", "25.0")), 29.5)
 Δdeg = parse(Float64, get(ENV, "CANARY_DELTA", "0.02"))
 Nx = round(Int, (λ₂-λ₁)/Δdeg); Ny = round(Int, (φ₂-φ₁)/Δdeg)
 Nz = 32
@@ -51,7 +51,7 @@ wetcols = findall(wet2d)
                reverse(diff(znodes(grid,Center(),Center(),Face())))[1])
 
 # --- parent validity mask -----------------------------------------------------
-glorys_region = DW.BoundingBox(longitude=(-22.0,-9.5), latitude=(24.5,30.0))
+glorys_region = DW.BoundingBox(longitude=(-22.0,-9.5), latitude=(φ₁ - 0.5, 30.0))
 glorys = DW.GLORYSDaily()
 # CANARY_GLORYS_DIR points at a gcsfuse mount on GCP; unset falls back to the local download cache.
 const GLORYS_KW = let d = get(ENV, "CANARY_GLORYS_DIR", ""); isempty(d) ? (;) : (; dir = d) end
@@ -191,5 +191,7 @@ for (n,(d,lab,cmap,lims)) in enumerate(panels)
     Colorbar(fig[r,2c],hm;width=12)
 end
 colgap!(fig.layout,6)
-out=joinpath(@__DIR__,"canary_glorys_interior_check.png"); save(out,fig)
+# Tag by southern boundary so a domain-sizing check does not overwrite the 25N baseline.
+tag = φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)
+out=joinpath(@__DIR__,"canary_glorys_interior_check$(tag).png"); save(out,fig)
 @info "Saved $out"
