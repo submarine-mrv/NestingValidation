@@ -175,3 +175,27 @@ to matter needs no migration, while the migration buys a scheme change that did 
   this metric, and the separate `oblique_tracer_outflow.jl` test did favour `ObliqueRadiation` at
   incidence angles beyond ~30°. The two results are not in conflict: different fields, different
   regimes, and the tracer test had an analytic truth this one cannot have.
+
+## Migration diff, and what the time convention does and does not explain
+
+Same code, same inputs, 0.1° for 2 days. `v113t0` is 0.113 with `CANARY_PARENT_T0=0`, which restores
+0.6.1's indexing and so isolates the time-convention change from everything else.
+
+| field | 0.110.17 | 0.113 | 0.113, old origin | explained by the 12 h shift? |
+|---|---|---|---|---|
+| v (min) | −0.53849 | −0.45778 | **−0.53094** | **yes** — 15% gap closes to 1.4% |
+| v (abs mean) | 2.9134e−2 | 2.8652e−2 | 2.9001e−2 | mostly — 1.65% to 0.46% |
+| u (abs mean) | 3.0205e−2 | 2.9743e−2 | 2.9960e−2 | partly — 1.53% to 0.81% |
+| T (mean) | 9.75984 | 9.72780 | 9.72794 | **no** — unchanged by the origin |
+| T (max) | 21.638 | 21.518 | 21.518 | **no** |
+| c (abs mean) | 3.1498e−9 | 3.2497e−9 | 3.2606e−9 | **no** |
+
+So the split is clean: **the dynamics differences are the time convention, the thermodynamic ones are
+not.** Restoring the old origin recovers the velocity extremes almost exactly, and does nothing at
+all for temperature or the tracer. T's maximum sits 0.12 °C lower on 0.113 whatever the parent
+timestamps say, which means a second, unrelated change somewhere in Oceananigans 0.110.17 → 0.113.1
+or NumericalEarth 0.6.1 → 0.8.0 — surface fluxes and the JRA55 coupling are the obvious suspects.
+
+**This is the open item on the migration.** Everything else is understood; a 0.12 °C shift in peak
+temperature is small but unexplained, and "small and unexplained" is not the same as "safe". Track it
+down before promoting `v113_staging` to the main environment.
