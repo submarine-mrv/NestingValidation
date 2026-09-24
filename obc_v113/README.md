@@ -196,6 +196,14 @@ all for temperature or the tracer. T's maximum sits 0.12 °C lower on 0.113 what
 timestamps say, which means a second, unrelated change somewhere in Oceananigans 0.110.17 → 0.113.1
 or NumericalEarth 0.6.1 → 0.8.0 — surface fluxes and the JRA55 coupling are the obvious suspects.
 
-**This is the open item on the migration.** Everything else is understood; a 0.12 °C shift in peak
-temperature is small but unexplained, and "small and unexplained" is not the same as "safe". Track it
-down before promoting `v113_staging` to the main environment.
+That second change is now localised: **it is in the initial condition, not the physics.** Peak
+temperature at *iteration 0* is 21.691 on 0.110.17 and 21.570 on 0.113, and at t = 2 days it is
+21.638 against 21.518 — the same 0.12 °C offset, constant rather than growing. So nothing accumulates
+over the run; the parent is simply regridded onto the child grid slightly differently. Surface fluxes
+and the JRA55 coupling, the obvious first suspects, are not involved. Both 0.113 runs agree exactly
+here, which also confirms the offset is independent of the timestamp convention — the initial
+condition is built from the first parent frame either way.
+
+A constant initial-condition offset of this size is benign for the runs this repo does, but it should
+be confirmed as a regridding change rather than a data-selection change before `v113_staging`
+replaces the main environment.
