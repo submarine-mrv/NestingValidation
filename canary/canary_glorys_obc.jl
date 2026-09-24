@@ -291,7 +291,15 @@ const zos_fts_c = FieldTimeSeries(zos_meta, CPU();            # only ever sample
 
 const BND_TIMES = Float64.(collect(u_fts_c.times))
 const BND_Δt    = BND_TIMES[2] - BND_TIMES[1]
-@assert BND_TIMES[1] == 0 && all(diff(BND_TIMES) .≈ BND_Δt) "boundary kernels assume uniform parent times from t = 0"
+# The kernels need UNIFORM parent spacing, but not a zero origin. NumericalEarth 0.8 stamps
+# GLORYSDaily at the CENTRE of its daily-mean window (12:00) rather than at 00:00, so the series
+# starts at 43200 s there and at 0 s on 0.6.1. Carrying the origin keeps one code path correct on
+# both -- see obc_v113/README.md.
+@assert all(diff(BND_TIMES) .≈ BND_Δt) "boundary kernels assume uniformly spaced parent times"
+# CANARY_PARENT_T0 overrides the origin. Its only purpose is migration checking: forcing it to 0 on
+# NumericalEarth 0.8 reproduces 0.6.1's indexing (same daily files, old assumed timestamps), which
+# isolates the time-convention change from every other difference between the versions.
+const BND_T0    = parse(Float64, get(ENV, "CANARY_PARENT_T0", string(BND_TIMES[1])))
 const BND_Nt    = length(BND_TIMES)
 
 function face_array(fts, which, loc_i, loc_j)
@@ -318,15 +326,20 @@ end
 # Velocity at the boundary FACE index (west i=1, south j=1, north j=Ny+1); tracers and η at the
 # adjacent interior node, matching salish_sea/.
 const pW = (; u = face_array(u_fts_c, :west,  1, 1),    T = face_array(T_fts_c, :west,  1, 1),
-              S = face_array(S_fts_c, :west,  1, 1),    η = face_η(:west),  Δt = BND_Δt, Nt = BND_Nt)
+              S = face_array(S_fts_c, :west,  1, 1),    η = face_η(:west),
+              Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 const pS = (; v = face_array(v_fts_c, :south, 1, 1),    T = face_array(T_fts_c, :south, 1, 1),
-              S = face_array(S_fts_c, :south, 1, 1),    η = face_η(:south), Δt = BND_Δt, Nt = BND_Nt)
+              S = face_array(S_fts_c, :south, 1, 1),    η = face_η(:south),
+              Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 const pN = (; v = face_array(v_fts_c, :north, 1, Ny+1), T = face_array(T_fts_c, :north, 1, Ny),
-              S = face_array(S_fts_c, :north, 1, Ny),   η = face_η(:north), Δt = BND_Δt, Nt = BND_Nt)
+              S = face_array(S_fts_c, :north, 1, Ny),   η = face_η(:north),
+              Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 @info @sprintf("Boundary exteriors precomputed: %d parent times at Δt = %.0f s", BND_Nt, BND_Δt)
 
 @inline function bnd_time(t, p)
-    τ = t / p.Δt
+    # Relative to the FIRST parent time, not to zero: see BND_T0. Before it (the first half-day when
+    # the parent is centred at noon) τ < 0, both clamps floor to the first sample, i.e. persistence.
+    τ = (t - p.T0) / p.Δt
     n = clamp(unsafe_trunc(Int, τ) + 1, 1, p.Nt - 1)
     return n, clamp(τ - (n - 1), zero(τ), one(τ))
 end
@@ -1002,14 +1015,20 @@ output_schedule = TimeInterval(output_hours * hours)
 @info @sprintf("Output: sections every %.1f h, 3-D snapshots every %.1f h", output_hours, snapshot_hours)
 out(name) = joinpath(@__DIR__, "canary_glorys_$(name)$(tag)")
 
+# Oceananigans renamed this writer keyword in 0.113 (overwrite_existing -> overwrite_files), for
+# Checkpointer as well as JLD2Writer. Picking it from the method's own kwarg list keeps ONE code path
+# across both versions; splat it into every writer below rather than naming the keyword directly.
+const OVERWRITE = (:overwrite_files in Base.kwarg_decl(which(JLD2Writer, Tuple{Any, Any}))) ?
+                  (; overwrite_files = true) : (; overwrite_existing = true)
+
 simulation.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, :, Nz), filename = out("surface"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, :, Nz), filename = out("surface"))
 simulation.output_writers[:west_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (1, :, :), filename = out("west_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (1, :, :), filename = out("west_section"))
 # Zonal section at 26.5N, cutting the shelf, the upwelling front and the open ocean.
 const j_shelf = argmin(abs.(φ_centers .- 26.5))
 simulation.output_writers[:shelf_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, j_shelf, :), filename = out("shelf_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, j_shelf, :), filename = out("shelf_section"))
 # All three open boundaries are saved, so the layered transports can be RE-BINNED offline: the layer
 # definition (σθ as a γⁿ proxy, and where to put the thresholds) is the least settled part of this
 # diagnostic, and re-deriving it from file is free where re-running is not. T, S and the grid all
@@ -1020,26 +1039,26 @@ simulation.output_writers[:shelf_section] = JLD2Writer(ocean.model, output_field
 # face, which is the off-by-one this script had until it was caught. West and south are exempt:
 # index 1 is both the boundary face and the first interior cell.
 simulation.output_writers[:south_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, 1, :), filename = out("south_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, 1, :), filename = out("south_section"))
 simulation.output_writers[:north_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, Ny, :), filename = out("north_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, Ny, :), filename = out("north_section"))
 simulation.output_writers[:north_face_v] = JLD2Writer(ocean.model, (; v = ocean.model.velocities.v);
-    schedule = output_schedule, overwrite_existing = true, indices = (:, Ny+1, :), filename = out("north_face_v"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, Ny+1, :), filename = out("north_face_v"))
 
 # 3-D snapshot every CANARY_SNAPSHOT_HOURS (~83 MB/frame at 0.02 deg, so ~2.5 GB for 90 days at 72 h).
 # Cheap against the cost of re-running to answer a question this run could already have answered:
 # interior sections, water-mass transformation, volume-integrated budgets.
 simulation.output_writers[:snapshot3d] = JLD2Writer(ocean.model, output_fields;
-    schedule = TimeInterval(snapshot_hours * hours), overwrite_existing = true, filename = out("snapshot3d"))
+    schedule = TimeInterval(snapshot_hours * hours), OVERWRITE..., filename = out("snapshot3d"))
 
 simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
-    schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
+    schedule = output_schedule, OVERWRITE..., filename = out("free_surface"))
 # One checkpoint on disk at a time (cleanup), so a months-long run can be resumed after a crash or a
 # deliberate stop without accumulating ~560 MB files. CANARY_CHECKPOINT_DAYS sets the cadence.
 checkpoint_days = parse(Float64, get(ENV, "CANARY_CHECKPOINT_DAYS", "10"))
 simulation.output_writers[:checkpointer] = Checkpointer(ocean.model;
     schedule = TimeInterval(checkpoint_days * days), dir = @__DIR__, prefix = "canary_checkpoint$(tag)",
-    overwrite_existing = true, cleanup = true)
+    OVERWRITE..., cleanup = true)
 @info @sprintf("Checkpoint every %.1f days -> %s", checkpoint_days, "canary_checkpoint$(tag)_iteration*.jld2")
 
 run!(simulation)

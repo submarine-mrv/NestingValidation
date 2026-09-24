@@ -507,7 +507,9 @@ test. Not yet established:
   retention number so far comes from *virtual* boundaries inside the existing run and is an upper
   bound. A real run at `CANARY_PHI_S=22.0` would both measure that bias and extend the fitted range
   from 270 km to ~690 km. Note it invalidates the whole GLORYS cache (the parent box follows the
-  domain), and that south of ~22.8°N the **west** boundary becomes the nearest one.
+  domain), and that past ~22.8°N the **west** boundary (600 km) is no further from the release than
+  the south one, so extending south alone stops buying distance along the tracer's actual path. The
+  **north** boundary is nearer than either (149 km) in both domains.
 - ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. The full configuration runs on
   an L4 and matches CPU at 0.1°, and runs at 0.02° (**1.8 s/iter, 2.95 GB of the L4's 24 GB**).
 - **GPU/CPU equivalence was checked at 0.1°, not at 0.02°** — a CPU run at the finer grid costs ~39 h.

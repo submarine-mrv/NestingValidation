@@ -112,14 +112,34 @@ so enabling it would have inflated every retention number by ~25% while looking 
 
 Extending south stops helping at **φ_S ≈ 22.8°N**, and not for any oceanographic reason.
 
-The release sits **600 km** from the *western* boundary at −21.5°E (the cosine factor at 28°N makes
-6.12° of longitude only 600 km). The southern boundary at φ_S sits (28.16 − φ_S) × 111.32 km away.
-Those are equal at φ_S = 22.76. Push the domain south of that and **west becomes the nearest open
-boundary and takes over as the dominant leak** — the southward extension buys nothing, because the
-tracer simply exits the other side.
+First, a correction to an earlier version of this note, because it changes how the number should be
+read. Distances from the release (−15.38°E, 28.16°N) to each open boundary:
 
-This is why the `CANARY_PHI_S` knob is only half a solution. A domain-sizing experiment that moves
-the southern boundary alone is measuring the western boundary by φ_S = 22.
+| boundary | distance | share of export, 25°N run at day 90 |
+|---|---|---|
+| **north** (29.5°N) | **149 km** | 10% |
+| west (−21.5°E) | 600 km | 9% |
+| south (25.0°N) | 352 km | **81%** |
+
+**North is the nearest open boundary, and always has been** — in the 22°N domain too, since only the
+southern edge moved. An earlier draft claimed west becomes "the nearest open boundary" past φ_S =
+22.8; that is simply false, and the framing was wrong. Proximity does not set the leak: the Canary
+Current advects the plume southwest, so the southern boundary took 81% of the export despite sitting
+2.4× further away than the northern one.
+
+What the crossover actually says is narrower, and still useful: **west and south are equidistant from
+the release at φ_S = 22.76**, so beyond that the western boundary is the nearer obstacle *along the
+direction the tracer actually travels*. Extending south alone then stops buying distance in the
+direction that matters.
+
+The 22°N run supports this. At day 32 its export is **north −4.3e−2 /s, south and west numerically
+zero** (1e−60): with the southern boundary moved to 686 km the plume has not reached it, and what
+leaves does so through the near northern edge. So moving the southern boundary works as intended —
+and it promotes the *northern* boundary, not the western one, to dominant leak in the interim.
+
+This is why the `CANARY_PHI_S` knob is only half a solution, though the other half is not the one the
+earlier draft named: a domain-sizing study that moves the southern boundary alone leaves both the
+northern boundary at 149 km and the western at 600 km fixed.
 
 Cost, for reference — extending south is cheap in cells but not free in data:
 
@@ -145,7 +165,9 @@ Settled:
   ~0.9 cm/s and a first-arrival speed of ~8.6 cm/s.
 - τ at the current domain size is ~400 days (upper bound), so 90-day and even 6-month experiments
   are not domain-limited.
-- Moving the southern boundary past ~22.8°N is wasted unless the western boundary moves with it.
+- Moving the southern boundary past ~22.8°N stops buying distance along the direction the tracer
+  travels, because west and south are equidistant from the release there. Note this is *not* a
+  statement about the nearest boundary: north, at 149 km, is nearest in both domains.
 
 Not settled:
 
