@@ -132,4 +132,12 @@ differs only by noise (compile time dominates); on JRA55 window reloads a plain 
   `CUDA_LAUNCH_BLOCKING=1` makes the error name the kernel that caused it.
 - **Frequent SSH polling gets throttled** ("timed out during banner exchange"); poll every few minutes.
 - `pgrep -f <pattern>` inside a `bash -c "... <pattern> ..."` matches itself.
+- **The same trap bites an auto-shutdown watcher, from a direction that is easy to miss.** A detached
+  `while pgrep -f canary_glorys_obc.jl; do sleep; done` watcher, used to stop the VM when a run ends,
+  never fired: the *launching* SSH command's own command line contained
+  `pgrep -f "canary_glorys_obc.jl"` as a verification step, that shell was orphaned when the local
+  end was killed, and it matched the watcher's pattern forever. The run had finished cleanly hours
+  earlier; the VM billed ~17 h idle. Match on something only the real process has (the interpreter
+  plus the script, checked with `pgrep -af` and inspected), and give any auto-shutdown watcher a
+  **wall-clock backstop** so a wedged predicate cannot cost a day of GPU.
 - A full GPU launch spends ~8 minutes compiling before the first iteration at 0.1°.
