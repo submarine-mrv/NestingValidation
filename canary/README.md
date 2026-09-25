@@ -1,8 +1,10 @@
 # Canary upwelling configuration (NW Africa)
 
-Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA55-forced
-runs at 0.02° (2 km), January (38.8 h) and July (36.3 h). Passive-tracer release implemented and
-verified but not yet used in a production run.** Model: `canary_glorys_obc.jl`.
+Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA55-forced runs at
+0.02° (2 km), January (38.8 h) and July (36.3 h) — plus two 90-day GPU tracer runs, at φ_S = 25.0
+(13.6 h) and φ_S = 22.0 (1.29 days), which together answer the domain-sizing question: at 90 days
+the 25°N domain was already large enough. See `../docs/canary-domain-sizing.md`.**
+Model: `canary_glorys_obc.jl`.
 
 ## Why this domain
 
