@@ -163,8 +163,18 @@ isempty(jra55_dir)  || @info "JRA55 dir:  $jra55_dir"
 # boundaries. Default site is Las Palmas (-15.38, 28.16): wet, 535 m, 47 of 49 neighbouring cells wet,
 # and the island's main port.
 use_tracer  = get(ENV, "CANARY_TRACER", "0") == "1"
-const λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",   "-15.38"))
-const φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",    "28.16"))
+# Release site, south coast of Gran Canaria. The two completed 90-day runs (phi_S = 25 and 22) used
+# the earlier point at (-15.38, 28.16) off the NORTH tip, so they are NOT directly comparable to runs
+# made after this change -- it moves the source ~39 km south, i.e. closer to the southern boundary
+# and further from the northern one.
+# Coastal release off the south-east of Gran Canaria, 2.5 km from the requested (27.812758,
+# -15.422082). That exact point regrids to LAND at 0.02 deg (bottom height +11.1 m), which does not
+# fail loudly: the Gaussian would sit on a dry cell and the release would leak out through whatever
+# wet cells its tail reached, displacing the effective source. This point is 60 m deep with 12
+# vertical levels beneath it and 81% of the 3σ patch wet -- deliberately shallow, because the release
+# is meant to be coastal. At 0.01 deg the coastline resolves better and it could move back inshore.
+const λ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LON",  "-15.397082"))
+const φ_release   = parse(Float64, get(ENV, "CANARY_RELEASE_LAT",   "27.807758"))
 # Sharp 2-D Gaussian at the surface: σ = 0.02° is one grid cell at the 0.02° target (1.98 km
 # zonal, 2.22 km meridional), so the source spans a few cells and is cut off at 3σ. The depth
 # covers the top cell only (1.21 m at CANARY_ZSCALE=700), i.e. a surface release.
@@ -180,7 +190,22 @@ using Oceananigans.Operators: Δzᶜᶜᶜ, Δzᶠᶜᶜ, Δzᶜᶠᶜ, Axᶠᶜ
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node, immersed_peripheral_node
 using Oceananigans.Units: Time
 
-radiation = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+# CANARY_RADIATION=oblique selects Raymond & Kuo (1984) two-dimensional radiation, which diagnoses a
+# tangential phase speed as well as a normal one. It exists only from Oceananigans 0.113, so the
+# lookup is conditional and one code path still runs on 0.110.17.
+# Default is normal: in an idealised truncation experiment the oblique scheme was within noise of
+# NormalRadiation, while adding a TANGENTIAL boundary condition (CANARY_TANGENTIAL_BC) was worth
+# +32-39% of retained enstrophy. See obc_v113/README.md -- the two knobs are independent.
+const HAS_OBLIQUE = isdefined(Oceananigans.BoundaryConditions, :ObliqueRadiation)
+radiation_kind = get(ENV, "CANARY_RADIATION", "normal")
+radiation_kind in ("normal", "oblique") || error("CANARY_RADIATION must be \"normal\" or \"oblique\"")
+if radiation_kind == "oblique" && !HAS_OBLIQUE
+    error("CANARY_RADIATION=oblique needs Oceananigans >= 0.113; this environment has no ObliqueRadiation")
+end
+radiation = radiation_kind == "oblique" ?
+    getfield(Oceananigans.BoundaryConditions, :ObliqueRadiation)(inflow_timescale = 6hours, outflow_timescale = Inf) :
+    NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+@info "Open-boundary radiation scheme: $(radiation_kind)"
 
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) =
     !immersed_peripheral_node(i, j, k, grid, ℓx, ℓy, ℓz) & !immersed_inactive_node(i, j, k, grid, ℓx, ℓy, ℓz)
@@ -327,12 +352,15 @@ end
 # adjacent interior node, matching salish_sea/.
 const pW = (; u = face_array(u_fts_c, :west,  1, 1),    T = face_array(T_fts_c, :west,  1, 1),
               S = face_array(S_fts_c, :west,  1, 1),    η = face_η(:west),
+              vt = face_array(v_fts_c, :west,  1, 1),
               Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 const pS = (; v = face_array(v_fts_c, :south, 1, 1),    T = face_array(T_fts_c, :south, 1, 1),
               S = face_array(S_fts_c, :south, 1, 1),    η = face_η(:south),
+              ut = face_array(u_fts_c, :south, 1, 1),
               Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 const pN = (; v = face_array(v_fts_c, :north, 1, Ny+1), T = face_array(T_fts_c, :north, 1, Ny),
               S = face_array(S_fts_c, :north, 1, Ny),   η = face_η(:north),
+              ut = face_array(u_fts_c, :north, 1, Ny),
               Δt = BND_Δt, Nt = BND_Nt, T0 = BND_T0)
 @info @sprintf("Boundary exteriors precomputed: %d parent times at Δt = %.0f s", BND_Nt, BND_Δt)
 
@@ -355,6 +383,11 @@ end
 @inline u_west_exterior(j, k, grid, clock, fields, p)  = face3(p.u, j, k, clock.time, p)
 @inline v_south_exterior(i, k, grid, clock, fields, p) = face3(p.v, i, k, clock.time, p)
 @inline v_north_exterior(i, k, grid, clock, fields, p) = face3(p.v, i, k, clock.time, p)
+# Tangential velocity exteriors: v at the west face, u at the south and north faces. Sampled at the
+# adjacent interior node like T and S, since the tangential component is half a cell off the boundary.
+@inline v_west_tangential(j, k, grid, clock, fields, p)  = face3(p.vt, j, k, clock.time, p)
+@inline u_south_tangential(i, k, grid, clock, fields, p) = face3(p.ut, i, k, clock.time, p)
+@inline u_north_tangential(i, k, grid, clock, fields, p) = face3(p.ut, i, k, clock.time, p)
 @inline tracer_T_exterior(a, k, grid, clock, fields, p) = face3(p.T, a, k, clock.time, p)
 @inline tracer_S_exterior(a, k, grid, clock, fields, p) = face3(p.S, a, k, clock.time, p)
 
@@ -388,8 +421,18 @@ nf(f, p) = NormalFlowBoundaryCondition(f; scheme = radiation, discrete_form = tr
 vb(f, p) = ValueBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
 gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parameters = p)
 
-u_bcs = FieldBoundaryConditions(west = nf(u_west_exterior, pW))
-v_bcs = FieldBoundaryConditions(south = nf(v_south_exterior, pS), north = nf(v_north_exterior, pN))
+# CANARY_TANGENTIAL_BC=1 also radiates the TANGENTIAL velocity at each open boundary: v at west, u at
+# south and north. Off by default so it is a controlled change against every run made so far.
+# Worth having: in an idealised truncation experiment the tangential condition was worth +32-39% of
+# retained enstrophy, while the NormalRadiation -> ObliqueRadiation change was within noise
+# (obc_v113/README.md). Without it the tangential component falls back to the default wall behaviour,
+# which is what the domain has been running with.
+use_tangential_bc = get(ENV, "CANARY_TANGENTIAL_BC", "0") == "1"
+tan_u = use_tangential_bc ? (; south = vb(u_south_tangential, pS), north = vb(u_north_tangential, pN)) : (;)
+tan_v = use_tangential_bc ? (; west  = vb(v_west_tangential,  pW)) : (;)
+u_bcs = FieldBoundaryConditions(; west = nf(u_west_exterior, pW), tan_u...)
+v_bcs = FieldBoundaryConditions(; south = nf(v_south_exterior, pS), north = nf(v_north_exterior, pN), tan_v...)
+use_tangential_bc && @info "Tangential velocity open BCs ON: v at west, u at south and north"
 U_bcs = FieldBoundaryConditions(grid, (Face(), Center(), nothing);  west  = gw(west_U_obc, pW))
 V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(south_V_obc, pS),
                                                                     north = gw(north_V_obc, pN))
@@ -434,6 +477,42 @@ function compute_release_volume()
     return V
 end
 
+# A release point on LAND does not fail loudly on its own, which is the reason this check exists: the
+# Gaussian's tail still reaches wet cells, so tracer enters the domain from displaced cells with a
+# truncated weighting and nothing in the output says so. Measured: (27.812758, -15.422082) regrids to
+# land at 0.02 deg (bottom height +11.1 m) and still produced a 17-cell release that looked healthy.
+function check_release_site()
+    λc = λnodes(grid_c, Center(), Center(), Center())
+    φc = φnodes(grid_c, Center(), Center(), Center())
+    zf = znodes(grid_c, Center(), Center(), Face())
+    i0 = argmin(abs.(λc .- λ_release)); j0 = argmin(abs.(φc .- φ_release))
+    wet(i, j, k) = wetcell(i, j, k, grid_c, Center(), Center(), Center())
+    centre_wet = wet(i0, j0, Nz)                       # k = Nz is the surface
+
+    nwet = ntot = 0                                    # surface footprint of the 3σ patch
+    for j in 1:Ny, i in 1:Nx
+        dx = (λc[i] - λ_release) * cosd(φ_release); dy = φc[j] - φ_release
+        dx^2 + dy^2 < R_release^2 || continue
+        ntot += 1; wet(i, j, Nz) && (nwet += 1)
+    end
+    frac = ntot == 0 ? 0.0 : nwet / ntot
+
+    kbot = findfirst(k -> wet(i0, j0, k), 1:Nz)        # lowest wet level in the release column
+    dep  = (centre_wet && kbot !== nothing) ? -zf[kbot] : 0.0
+    nlev = (centre_wet && kbot !== nothing) ? Nz - kbot + 1 : 0
+    @info @sprintf("Release site %.4fE %.4fN: centre cell %s | depth %.0f m (%d levels) | patch %d/%d wet (%.0f%%)",
+                   λ_release, φ_release, centre_wet ? "WET" : "DRY", dep, nlev, nwet, ntot, 100frac)
+
+    if !centre_wet && get(ENV, "CANARY_ALLOW_DRY_RELEASE", "0") != "1"
+        error("Release site ($(λ_release), $(φ_release)) is LAND at this resolution. The run would still " *
+              "emit tracer, from displaced cells with a truncated Gaussian, and look healthy. Move the " *
+              "site, or set CANARY_ALLOW_DRY_RELEASE=1 to proceed anyway.")
+    end
+    frac < 0.5 && @warn @sprintf("Only %.0f%% of the release patch is wet: the Gaussian is truncated by the coast, so the effective source sits off-centre", 100frac)
+    return nothing
+end
+
+use_tracer && check_release_site()
 release_volume = use_tracer ? compute_release_volume() : 0.0
 if use_tracer
     release_volume <= 0 ?
@@ -940,7 +1019,8 @@ add_callback!(simulation, progress, IterationInterval(parse(Int, get(ENV, "CANAR
 tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
       (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
-      (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * get(ENV, "CANARY_TAG", "")
+      (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * (use_tangential_bc ? "_tanbc" : "") * (radiation_kind == "oblique" ? "_oblique" : "") *
+      get(ENV, "CANARY_TAG", "")
 
 # Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises
 # whatever model the simulation holds, which here is the coupled EarthSystemModel, and neither

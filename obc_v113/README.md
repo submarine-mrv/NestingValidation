@@ -204,6 +204,12 @@ and the JRA55 coupling, the obvious first suspects, are not involved. Both 0.113
 here, which also confirms the offset is independent of the timestamp convention — the initial
 condition is built from the first parent frame either way.
 
-A constant initial-condition offset of this size is benign for the runs this repo does, but it should
-be confirmed as a regridding change rather than a data-selection change before `v113_staging`
-replaces the main environment.
+**Confirmed as regridding, and the open item is closed.** Loading the same GLORYS field on both
+versions gives bit-identical parent data -- same grid (152x68x50), same node coordinates, and an
+inpainted max of 22.008575439 and mean of 13.139760017 to every digit on each. The parent is
+therefore selected and inpainted identically, and the 0.12 °C arises purely when that field is
+regridded onto the child grid. A constant interpolation offset of this size is benign for the runs
+this repo does, and nothing about it accumulates.
+
+Remaining before `v113_staging` replaces the main environment: the analysis scripts would then read
+0.110-written JLD2 with a 0.113 reader, so promote once the domain-sizing outputs are fully mined.
