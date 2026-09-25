@@ -68,7 +68,10 @@ for (m, (data, lab, cmap, rng, xs, ys)) in enumerate(panels)
     Colorbar(fig[r, 2c], hm; width = 12)
 end
 colgap!(fig.layout, 6)
-out = joinpath(@__DIR__, "canary_tracer_90day.mp4")
+# Name the outputs from the non-default part of the tag, so a domain-sizing run does not overwrite
+# the phi_S = 25 animation. The 25N tag reduces to "", keeping its original filenames.
+suffix = replace(tag, "_zstar_jraryf" => "", "_tracer3mo" => "")
+out = joinpath(@__DIR__, "canary_tracer_90day$(suffix).mp4")
 record(fig, out, 1:nt; framerate = 6) do i; n[] = i; end
-n[] = nt; save(joinpath(@__DIR__, "canary_tracer_day90.png"), fig)
+n[] = nt; save(joinpath(@__DIR__, "canary_tracer_day90$(suffix).png"), fig)
 @info "Saved $out"
