@@ -1,6 +1,6 @@
 # How far south must the Canary domain reach?
 
-Status as of 2026-09-21. Model: `canary/canary_glorys_obc.jl`. Analysis: `canary/virtual_boundary.jl`.
+Status as of 2026-09-25. Model: `canary/canary_glorys_obc.jl`. Analysis: `canary/virtual_boundary.jl`.
 
 The Canary configuration exists to answer a residence-time question: water released at a point on
 Gran Canaria (−15.38°E, 28.16°N) — a CDR-style continuous surface source — drifts southwest with the
@@ -24,12 +24,13 @@ That gives retention as a function of distance-to-boundary `L` over a measured r
 boundaries are kept at or north of 25.75°N so none sits inside the real sponge (a 0.25° Gaussian at
 25.0, felt to ~0.75°).
 
-**The bias runs one way, and it matters.** Tracer that crosses a virtual boundary southward can
-drift back north, and this method counts it as retained again. A *real* boundary there would have
-flushed it, because the prescribed exterior carries no tracer and nothing comes back in. So every
-retention number below is an **upper bound**, and every timescale derived from it is an upper bound
-too. A real domain with its southern boundary at 27.0°N would retain *less* than the 63.9% quoted
-for the virtual boundary there.
+**On the bias — the obvious argument is wrong, and a real run settled it.** Tracer crossing a virtual
+boundary southward can drift back north and be counted as retained again, which suggests these are
+upper bounds. This note asserted exactly that for some time. Measurement says otherwise: the effect
+is real but small, and it is outweighed by one the argument omits — a *real* boundary further south
+permanently flushes tracer that, in a larger domain, would have returned. Net, the method
+**under**-estimates retention by up to ~4 points. See *The check: a real φ_S = 22.0 run* below, which
+compares every number in this section against a domain that actually extends to 22°N.
 
 ## What the 90-day run measured
 
@@ -185,3 +186,71 @@ Not settled:
   (`/home/vtamsitt/nesting/canary/`) and is not in the repo. Only the derived CSV came back. The run
   **started 1993-01-01** — not recorded in `tracer3mo.log`, but established by its t = 0 state being
   bit-identical to the January 7-day run. The log header should print the start date.
+
+## The check: a real φ_S = 22.0 run, measured against the extrapolation
+
+90 days at 0.02°, 1.29 days wall on an L4, identical to the 25°N run in every respect but the
+southern boundary — same start (1993-01-01), same resolution, same forcing, same plain-WENO tracer
+scheme. `canary/out3mo/vb_phis22.csv`. Domain inventory at day 90: **91.36% of released**, against
+88.82% for the 25°N domain.
+
+### The virtual-boundary method is accurate to a few percent — and biased the other way
+
+Retention north of each shared latitude at day 90, as a percentage of released:
+
+| φ_b | L (km) | 25°N run (virtual) | 22°N run (measured) | error |
+|---|---|---|---|---|
+| 25.75 | 268 | 86.96% | 89.74% | −2.78 |
+| 26.00 | 241 | 84.64% | 87.73% | −3.09 |
+| 26.50 | 185 | 75.59% | 79.50% | −3.91 |
+| 27.00 | 129 | 63.92% | 66.12% | −2.19 |
+| 27.25 | 101 | 60.09% | 60.23% | −0.14 |
+| 27.50 | 74 | 57.46% | 54.21% | +3.25 |
+
+**This note previously claimed every virtual-boundary retention number was an UPPER bound. That was
+wrong.** The stated reasoning — tracer crossing a virtual boundary southward can return and be
+counted as retained again — is real but small, and it is outweighed by an effect the argument missed:
+in the 25°N run the *real* boundary at 25.0 permanently flushed tracer that, in the larger domain,
+stays and circulates back north. Depletion beats double-counting. The method therefore slightly
+UNDER-estimates retention, by ≤4 points at every latitude tested, with the sign flipping only at
+27.5 where the virtual boundary is far from the real one.
+
+Either way the error is a few percent, which is the useful finding: **virtual boundaries inside one
+run predict a real larger domain to within ~4 percentage points**, so the technique is sound and the
+90-day retention numbers can be trusted at that level.
+
+### The extrapolated thresholds held up
+
+Predicted from the 25°N τ(L) fit against measured in the 22°N run, at 90 days:
+
+| target retention | predicted L | measured L | error |
+|---|---|---|---|
+| 60% | 94 km | ~101 km | 7% low |
+| 70% | 121 km | ~140 km | 16% low |
+| 80% | 174 km | ~187 km | 7% low |
+| 90% | 331 km | ~300 km | 10% high |
+
+Accurate to 7–16% in distance, and the direction of the error at 60–80% matches the caveat already
+recorded here: the well-mixed model over-predicts retention mid-range, so its latitudes are biased
+north and the true boundary sits slightly further south.
+
+### Retention saturates, so the southward extension was not needed
+
+| φ_S | L (km) | retention at day 90 |
+|---|---|---|
+| 23.0 | 574 | 91.34% |
+| 24.0 | 463 | 91.26% |
+| 25.0 | 352 | 90.90% |
+| 25.5 | 296 | 90.35% |
+| whole 22°N domain | — | 91.36% |
+
+Going from 352 km to 574 km buys **0.44 percentage points**. Essentially all the tracer still in the
+domain at day 90 is north of 23°N, and almost all of it north of 25°N. **At 90 days the 25°N domain
+was already large enough**; the extension to 22°N cost 1.67× the cells and ~29 h of GPU to confirm
+that the boundary was not the binding constraint. That is a real answer, and the cheaper way to have
+reached it was the virtual-boundary analysis, which said so to within a few percent from a run that
+already existed.
+
+The caveat that survives: this is a 90-day statement. τ(L) at the current domain size is several
+hundred days, so a multi-year experiment would see the boundary, and the saturation above would not
+hold.

@@ -53,8 +53,10 @@ open(out, "w") do io
         norths = [sum(@view cv[:, j:end, :]) for j in j_bounds]
         @printf(io, "%.4f,%.8e,%s\n", times[n]/86400, total,
                 join((@sprintf("%.8e", x) for x in norths), ","))
-        @printf("frame %2d  t=%6.2f d  total=%.4e  north(27.0)=%.4e\n",
-                n, times[n]/86400, total, norths[4])
+        # Label the probe from φ_bounds, not a literal: the list is now domain-dependent, so a
+        # hard-coded "27.0" silently mislabelled norths[4] as 24.5 on the phi_S = 22 run.
+        @printf("frame %2d  t=%6.2f d  total=%.4e  north(%.2f)=%.4e\n",
+                n, times[n]/86400, total, φ_bounds[end], norths[end])
         flush(stdout)
     end
 end
