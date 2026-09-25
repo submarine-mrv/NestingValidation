@@ -166,7 +166,7 @@ Settled:
   ~0.9 cm/s and a first-arrival speed of ~8.6 cm/s.
 - τ at the current domain size is ~400 days (upper bound), so 90-day and even 6-month experiments
   are not domain-limited.
-- Moving the southern boundary past ~22.8°N stops buying distance along the direction the tracer
+- At 90 days only. Moving the southern boundary past ~22.8°N stops buying distance along the direction the tracer
   travels, because west and south are equidistant from the release there. Note this is *not* a
   statement about the nearest boundary: north, at 149 km, is nearest in both domains.
 
@@ -254,3 +254,48 @@ already existed.
 The caveat that survives: this is a 90-day statement. τ(L) at the current domain size is several
 hundred days, so a multi-year experiment would see the boundary, and the saturation above would not
 hold.
+
+## What this means for the CDR question — the 90-day answer is not the answer
+
+**"The 25°N domain was already large enough" is a statement about 90 days only, and it is easy to
+misread as settling the CDR question. It does not.** Air-sea CO₂ equilibration runs months to about a
+year, so the timescale that matters for whether uptake can be accounted for inside the domain is
+~1 year, not 90 days. Over 90 days the plume has barely begun to spread and no domain size matters.
+
+The φ_S = 22.0 run does sharpen the answer, by extending the measured range of τ(L) from 73–268 km to
+73–574 km. Refitted on its 13 virtual boundaries, every point now constrained to better than 6%:
+
+    τ = 0.854 d/km × L + 106 d
+
+| φ_S | L (km) | τ (d) | 90 d | 180 d | **1 yr** | 2 yr |
+|---|---|---|---|---|---|---|
+| **25.0 (current)** | 352 | 407 | 89.7% | 80.8% | **66.0%** | 46.4% |
+| 24.0 | 463 | 502 | 91.5% | 84.0% | 71.0% | 52.7% |
+| 23.0 | 574 | 597 | 92.8% | 86.3% | 74.8% | 57.7% |
+| 22.0 | 686 | 692 | 93.8% | 88.0% | 77.7% | 61.8% |
+| 21.0 | 797 | 787 | 94.5% | 89.4% | 80.0% | 65.2% |
+
+The 90-day column reproduces the measurements (89.7% predicted against 88.8% measured at 25°N), which
+is the fit's own consistency check.
+
+**At one year the current domain holds ~66%, so about a third of the treated water is outside it; by
+two years more than half is.** That is the concern this note opened with, and it survives.
+
+Southern boundary needed for a target retention *at one year*:
+
+| target | boundary |
+|---|---|
+| 50% | 26.9°N |
+| 60% | 25.9°N |
+| 70% | 24.2°N |
+| 80% | **21.0°N** |
+
+**This is more pessimistic than the earlier extrapolation, not less.** The old fit put 80%-at-one-year
+at φ_S ≈ 22.9°N; the better-constrained one puts it at 21.0°N, because the old fit over-estimated τ at
+long range by roughly 20%.
+
+**The weak link has moved from space to time.** Extrapolating across domain size is now validated to
+7–16%. Extrapolating from a 90-day record to one- and two-year retention is not: those τ values are
+inferred from curvature in a 90-day series, and the well-mixed flush model is carrying the
+extrapolation. Treat the one-year row as the best available estimate, not a measurement. Settling it
+needs a run of order a year — at the 22°N domain's ~29 h per 90 days, about 5 days of GPU.
