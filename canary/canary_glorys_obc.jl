@@ -539,10 +539,29 @@ const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV =
 # it leave freely. A default no-flux condition would trap it and make residence time meaningless.
 @inline zero_west(j, k, grid, clock, fields)  = zero(grid)
 @inline zero_ns(i, k, grid, clock, fields)    = zero(grid)
+# CANARY_RESERVOIR_IN / _OUT give the release tracers a MOM6-style boundary reservoir (metres),
+# available from Oceananigans 0.113.2. A memoryless Value boundary hands re-entering water the
+# exterior value regardless of what just left -- and the exterior here is ZERO -- so tracer that
+# leaves and returns is destroyed. That is the same mechanism this domain's own data implicated: the
+# 22N run retained MORE north of every shared latitude than the 25N run's virtual boundaries
+# predicted, because the real boundary at 25.0 flushed tracer that would otherwise have come back
+# (docs/canary-domain-sizing.md). Upstream measures ~7-8% lost per oscillation at zero net
+# displacement. Both scales 0, the default, reproduces the memoryless condition exactly.
+const res_in  = parse(Float64, get(ENV, "CANARY_RESERVOIR_IN",  "0"))
+const res_out = parse(Float64, get(ENV, "CANARY_RESERVOIR_OUT", "0"))
+const use_reservoir = res_in > 0 || res_out > 0
+if use_reservoir && !isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
+    error("CANARY_RESERVOIR_IN/_OUT need Oceananigans >= 0.113.2; this environment has no TracerReservoir")
+end
+release_scheme = use_reservoir ?
+    getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(inflow_length_scale  = res_in,
+                                                                outflow_length_scale = res_out) : radiation
+use_reservoir && @info @sprintf("Release-tracer reservoir: inflow L = %.0f m, outflow L = %.0f m", res_in, res_out)
+
 tracer_bcs() = FieldBoundaryConditions(
-    west  = ValueBoundaryCondition(zero_west; scheme = radiation, discrete_form = true),
-    south = ValueBoundaryCondition(zero_ns;   scheme = radiation, discrete_form = true),
-    north = ValueBoundaryCondition(zero_ns;   scheme = radiation, discrete_form = true))
+    west  = ValueBoundaryCondition(zero_west; scheme = release_scheme, discrete_form = true),
+    south = ValueBoundaryCondition(zero_ns;   scheme = release_scheme, discrete_form = true),
+    north = ValueBoundaryCondition(zero_ns;   scheme = release_scheme, discrete_form = true))
 
 tracer_names   = use_tracer ? (:T, :S, :c, :ac) : (:T, :S)
 # ac gets its source (∂ac/∂t = c) from a callback, not a Forcing: a forcing with field_dependencies
@@ -1031,6 +1050,7 @@ tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : ""
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
       (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
       (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * (radiation_kind == "oblique" ? "_oblique" : "") * (normal_kind == "perturbation" ? "_pertadv" : "") *
+      (use_reservoir ? @sprintf("_res%.0f", res_in) : "") *
       get(ENV, "CANARY_TAG", "")
 
 # Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises
