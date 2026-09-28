@@ -95,3 +95,55 @@ see above for whether it is worth having at all.
 - **Before trusting a negative result, verify the fix actually reached the thing you tested.** A "not the cause" conclusion was wrong for days because the repair never touched the initial condition.
 - **Change one thing per run**, and tag outputs by configuration so baselines survive.
 - Bounded 1-hour tests are enough for stability; **transport and water-mass questions need days** (advective transit from boundary to interior).
+
+## Cross-check: the Mid-Atlantic Bight configuration
+
+`NumericalEarthSandbox/scripts/02_mab_glorys_obc.jl` (enri66) is an independent GLORYS-forced open
+boundary configuration. Comparing it against `canary/` is the only external check this recipe has
+had, and it is worth keeping current as both evolve.
+
+### Four choices agree, independently
+
+| | MAB | canary/ |
+|---|---|---|
+| barotropic U/V | `GravityWaveRadiationBoundaryCondition` (Flather) | same |
+| free surface η | `SurfaceWaveRadiationBoundaryCondition` (Chapman) | same |
+| tracers T/S | `ValueBoundaryCondition` + `NormalRadiation`, outflow `Inf` | same |
+| Flather exterior | depth integral through the **model's** wet column at model z-levels | same |
+
+The last one is the subtle one and the agreement is the most reassuring part: MAB offers three ways
+to build `Uᵉˣᵗ` (`native` over GLORYS's own vertical grid, `masked` through the model wet column,
+`legacy` unmasked) and defaults to the masked form, which is what `west_U_obc` and friends here have
+always computed. Two implementations converging on that independently is decent evidence it is right.
+
+### Four differences, in the order they matter
+
+1. **MAB sets TANGENTIAL velocity boundary conditions; this configuration never did.** Theirs is
+   `ValueBoundaryCondition(Interpolated(fts); scheme = NormalRadiation(...))` on the tangential
+   component at every boundary, with a `prescribed` mode that swaps it for stiff Dirichlet. That is
+   independent corroboration of the truncation experiment in `obc_v113/README.md`, which put the
+   tangential condition at +32-39% of retained enstrophy, and of Oceananigans PR #5962, which
+   attributes its headline result to the same thing. Three lines of evidence, three different routes.
+   `canary/` now sets it unconditionally, in exactly that form.
+
+2. **Normal velocity: MAB uses `PerturbationAdvection`, this uses the radiation scheme.** They apply
+   different schemes to the normal component (`PerturbationAdvection`) and to the tangential
+   component and tracers (`NormalRadiation`); `canary/` used one scheme throughout.
+   `CANARY_NORMAL_SCHEME=perturbation` reproduces their split. Available on 0.110.17 as well as
+   0.113, so this needs no migration.
+
+3. **MAB has no sponge at all** — interior restoring was removed and all forcing enters through the
+   boundaries. `canary/` runs a 0.25° Gaussian at a 12 h timescale. The narrow width here is
+   deliberate (the Salish lesson: a wide sponge pins the features the domain exists to resolve), but
+   MAB went further and dropped it entirely. A sponge-off arm is cheap and worth measuring.
+
+4. **Inflow timescale: MAB 1 day, `canary/` 6 hours.** Ours is roughly 4x stiffer on inflow.
+
+### Read their tuning with care
+
+MAB appears to run its child at **1/12°, the same resolution as GLORYS**, so it is not really
+downscaling: the child resolves little the parent cannot supply, and the open boundaries carry
+correspondingly less stress. `canary/` runs 0.02° against a 1/12° parent, a ~4.5x refinement, which
+is the harder regime and precisely the one where the truncation experiment found the tangential
+condition mattering. Treat the agreement above as a strong check on the **wiring**, and their
+timescales and sponge choice as a weaker guide to **tuning** here.

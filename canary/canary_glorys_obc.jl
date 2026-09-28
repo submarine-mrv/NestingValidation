@@ -183,7 +183,7 @@ const R_release   = 3σ_release                                                 
 const D_release   = parse(Float64, get(ENV, "CANARY_RELEASE_DEPTH",  "1.5"))     # metres below surface
 
 # --- Boundary conditions ------------------------------------------------------
-using Oceananigans.BoundaryConditions: NormalRadiation,
+using Oceananigans.BoundaryConditions: NormalRadiation, PerturbationAdvection,
                                        GravityWaveRadiationBoundaryCondition,
                                        SurfaceWaveRadiationBoundaryCondition
 using Oceananigans.Operators: Δzᶜᶜᶜ, Δzᶠᶜᶜ, Δzᶜᶠᶜ, Axᶠᶜᶜ, Ayᶜᶠᶜ, Azᶜᶜᶜ, Vᶜᶜᶜ
@@ -194,8 +194,8 @@ using Oceananigans.Units: Time
 # tangential phase speed as well as a normal one. It exists only from Oceananigans 0.113, so the
 # lookup is conditional and one code path still runs on 0.110.17.
 # Default is normal: in an idealised truncation experiment the oblique scheme was within noise of
-# NormalRadiation, while adding a TANGENTIAL boundary condition (CANARY_TANGENTIAL_BC) was worth
-# +32-39% of retained enstrophy. See obc_v113/README.md -- the two knobs are independent.
+# NormalRadiation, while adding the tangential boundary condition (now unconditional, below) was
+# worth +32-39% of retained enstrophy. See obc_v113/README.md.
 const HAS_OBLIQUE = isdefined(Oceananigans.BoundaryConditions, :ObliqueRadiation)
 radiation_kind = get(ENV, "CANARY_RADIATION", "normal")
 radiation_kind in ("normal", "oblique") || error("CANARY_RADIATION must be \"normal\" or \"oblique\"")
@@ -206,6 +206,16 @@ radiation = radiation_kind == "oblique" ?
     getfield(Oceananigans.BoundaryConditions, :ObliqueRadiation)(inflow_timescale = 6hours, outflow_timescale = Inf) :
     NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
 @info "Open-boundary radiation scheme: $(radiation_kind)"
+
+# CANARY_NORMAL_SCHEME=perturbation uses PerturbationAdvection for the boundary-NORMAL velocity
+# instead of the radiation scheme, keeping radiation for the tangential velocity and the tracers.
+# That is the split the Mid-Atlantic Bight configuration in NumericalEarthSandbox uses; ours has
+# always used one scheme throughout. Available on both 0.110.17 and 0.113. See the recipe doc.
+normal_kind = get(ENV, "CANARY_NORMAL_SCHEME", "radiation")
+normal_kind in ("radiation", "perturbation") || error("CANARY_NORMAL_SCHEME must be \"radiation\" or \"perturbation\"")
+normal_scheme = normal_kind == "perturbation" ?
+    PerturbationAdvection(inflow_timescale = 6hours, outflow_timescale = Inf) : radiation
+normal_kind == "perturbation" && @info "Boundary-normal velocity scheme: PerturbationAdvection"
 
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) =
     !immersed_peripheral_node(i, j, k, grid, ℓx, ℓy, ℓz) & !immersed_inactive_node(i, j, k, grid, ℓx, ℓy, ℓz)
@@ -417,22 +427,23 @@ end
     return (V, face2(p.η, i, clock.time, p))
 end
 
-nf(f, p) = NormalFlowBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
+nf(f, p) = NormalFlowBoundaryCondition(f; scheme = normal_scheme, discrete_form = true, parameters = p)
 vb(f, p) = ValueBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
 gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parameters = p)
 
-# CANARY_TANGENTIAL_BC=1 also radiates the TANGENTIAL velocity at each open boundary: v at west, u at
-# south and north. Off by default so it is a controlled change against every run made so far.
-# Worth having: in an idealised truncation experiment the tangential condition was worth +32-39% of
-# retained enstrophy, while the NormalRadiation -> ObliqueRadiation change was within noise
-# (obc_v113/README.md). Without it the tangential component falls back to the default wall behaviour,
-# which is what the domain has been running with.
-use_tangential_bc = get(ENV, "CANARY_TANGENTIAL_BC", "0") == "1"
-tan_u = use_tangential_bc ? (; south = vb(u_south_tangential, pS), north = vb(u_north_tangential, pN)) : (;)
-tan_v = use_tangential_bc ? (; west  = vb(v_west_tangential,  pW)) : (;)
-u_bcs = FieldBoundaryConditions(; west = nf(u_west_exterior, pW), tan_u...)
-v_bcs = FieldBoundaryConditions(; south = nf(v_south_exterior, pS), north = nf(v_north_exterior, pN), tan_v...)
-use_tangential_bc && @info "Tangential velocity open BCs ON: v at west, u at south and north"
+# The TANGENTIAL velocity carries an open boundary condition as well as the normal one: v at west,
+# u at south and north. Unconditional, on three independent lines of evidence -- Oceananigans PR
+# #5962 attributes its headline gain to radiating the tangential component, the truncation experiment
+# in obc_v113/README.md measured it at +32-39% of retained enstrophy, and the Mid-Atlantic Bight
+# configuration sets it by default (docs/obc-implementation-recipe.md).
+# Everything run before this had NO condition here, so the tangential component fell back to the
+# default wall behaviour; those runs are not comparable to these.
+u_bcs = FieldBoundaryConditions(west  = nf(u_west_exterior,    pW),
+                                south = vb(u_south_tangential, pS),
+                                north = vb(u_north_tangential, pN))
+v_bcs = FieldBoundaryConditions(south = nf(v_south_exterior,   pS),
+                                north = nf(v_north_exterior,   pN),
+                                west  = vb(v_west_tangential,  pW))
 U_bcs = FieldBoundaryConditions(grid, (Face(), Center(), nothing);  west  = gw(west_U_obc, pW))
 V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(south_V_obc, pS),
                                                                     north = gw(north_V_obc, pN))
@@ -1019,7 +1030,7 @@ add_callback!(simulation, progress, IterationInterval(parse(Int, get(ENV, "CANAR
 tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : "") *
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
       (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
-      (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * (use_tangential_bc ? "_tanbc" : "") * (radiation_kind == "oblique" ? "_oblique" : "") *
+      (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * (radiation_kind == "oblique" ? "_oblique" : "") * (normal_kind == "perturbation" ? "_pertadv" : "") *
       get(ENV, "CANARY_TAG", "")
 
 # Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises

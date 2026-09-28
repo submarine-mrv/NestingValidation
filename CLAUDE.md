@@ -32,7 +32,8 @@ parent product.
 ## Docs
 
 - `docs/obc-implementation-recipe.md` — portable recipe for parent-driven open boundaries: the BC
-  wiring that works, the traps, the net-transport correction, the diagnostics worth having.
+  wiring that works, the traps, the net-transport correction, the diagnostics worth having, and a
+  cross-check against the Mid-Atlantic Bight configuration in NumericalEarthSandbox.
 - `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
   why the domain boundaries sit where they do, and known limitations.
 - `docs/environment.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, run cost.
