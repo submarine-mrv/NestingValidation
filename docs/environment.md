@@ -89,6 +89,28 @@ CFL limit of ~3.4 min. A 7-day run is ~2580 iterations and ~12 h. The `pacing:` 
 output reports live s/iter and an ETA — use s/iter for planning, since the ETA reads pessimistic
 until Δt caps.
 
+## The local ECCO cache was moved to GCS (2026-09-28)
+
+ClimaOcean's scratchspace (`~/.julia/scratchspaces/0376089a-.../ECCO`, 12 GB, 157 files) held ECCO4
+SALT/THETA for 1993 **and 2017** plus `v4/` and `v4_darwin/`. It was deleted locally after a
+byte-verified snapshot to
+
+    gs://<forcing-bucket>/ecco4monthly-cache/
+
+Restore with `gcloud storage rsync -r gs://<forcing-bucket>/ecco4monthly-cache/ <that path>`.
+
+**Check before assuming a cache is redundant with GCS.** The buckets did already hold ECCO --
+`gs://ecco4monthly/data/` and `gs://<forcing-bucket>/ecco4monthly/` both carry
+`SALT_1993_01.nc` under exactly the local names -- but they stop at **1993**. All 24 of the 2017
+files, 32 of 56 `v4/` files, and `v4_darwin/` existed nowhere else, so deleting on the strength of
+"it's on GCP" would have lost roughly 9.7 of the 12 GB. The snapshot above closes that gap.
+
+Note ClimaOcean is NOT orphaned despite this repo having moved to NumericalEarth: it is still a
+dependency of `GlobalOceanBioME`, `MediterraneanRegionalConfiguration.jl` and `GlobalCDRModel`, and
+the v1.9/v1.10 shared environments. Its remaining ~16 GB (JRA55, Copernicus, ETOPO, GLORYS, EN4,
+ERA5) duplicates much of what NumericalEarth caches separately; clearing either side just makes the
+owning project re-download.
+
 ## GCP GPU runs
 
 Verified 2026-09-15 on project `<gcp-project>`. No Docker: the VM runs Julia directly.
