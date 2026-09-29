@@ -202,10 +202,23 @@ radiation_kind in ("normal", "oblique") || error("CANARY_RADIATION must be \"nor
 if radiation_kind == "oblique" && !HAS_OBLIQUE
     error("CANARY_RADIATION=oblique needs Oceananigans >= 0.113; this environment has no ObliqueRadiation")
 end
-radiation = radiation_kind == "oblique" ?
+const RAD_NORMAL = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+const RAD_OBLIQUE = HAS_OBLIQUE ?
     getfield(Oceananigans.BoundaryConditions, :ObliqueRadiation)(inflow_timescale = 6hours, outflow_timescale = Inf) :
-    NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
-@info "Open-boundary radiation scheme: $(radiation_kind)"
+    nothing
+
+# CANARY_OBLIQUE_SIDES restricts the oblique scheme to named boundaries (comma list of west/south/
+# north); unset means all of them. This exists because oblique diverged at 0.02 deg with salinity
+# reaching 45.7 psu, and the blow-up sat on cell (332, 1) -- the LAST WET CELL of the south boundary,
+# with land in the next cell along. Oblique's tangential derivative runs ALONG the boundary, so there
+# it is evaluated across a land/water interface. West is 100% wet and north 99%; south is 58% wet and
+# is the only boundary that terminates in coast. See docs/obc-implementation-recipe.md.
+oblique_sides = Symbol.(split(get(ENV, "CANARY_OBLIQUE_SIDES", ""), ',', keepempty = false))
+use_oblique(side) = radiation_kind == "oblique" && (isempty(oblique_sides) || side in oblique_sides)
+rad(side) = use_oblique(side) ? RAD_OBLIQUE : RAD_NORMAL
+radiation = rad(:west)          # tracer BCs and anything not side-aware use this
+@info "Open-boundary radiation: $(radiation_kind)" *
+      (radiation_kind == "oblique" && !isempty(oblique_sides) ? " on $(join(oblique_sides, ",")) only" : "")
 
 # CANARY_NORMAL_SCHEME=perturbation uses PerturbationAdvection for the boundary-NORMAL velocity
 # instead of the radiation scheme, keeping radiation for the tangential velocity and the tracers.
@@ -427,8 +440,9 @@ end
     return (V, face2(p.η, i, clock.time, p))
 end
 
-nf(f, p) = NormalFlowBoundaryCondition(f; scheme = normal_scheme, discrete_form = true, parameters = p)
-vb(f, p) = ValueBoundaryCondition(f; scheme = radiation, discrete_form = true, parameters = p)
+nf(f, p, side) = NormalFlowBoundaryCondition(f; scheme = (normal_kind == "perturbation" ? normal_scheme : rad(side)),
+                                               discrete_form = true, parameters = p)
+vb(f, p, side) = ValueBoundaryCondition(f; scheme = rad(side), discrete_form = true, parameters = p)
 gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parameters = p)
 
 # The TANGENTIAL velocity carries an open boundary condition as well as the normal one: v at west,
@@ -438,12 +452,12 @@ gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parame
 # configuration sets it by default (docs/obc-implementation-recipe.md).
 # Everything run before this had NO condition here, so the tangential component fell back to the
 # default wall behaviour; those runs are not comparable to these.
-u_bcs = FieldBoundaryConditions(west  = nf(u_west_exterior,    pW),
-                                south = vb(u_south_tangential, pS),
-                                north = vb(u_north_tangential, pN))
-v_bcs = FieldBoundaryConditions(south = nf(v_south_exterior,   pS),
-                                north = nf(v_north_exterior,   pN),
-                                west  = vb(v_west_tangential,  pW))
+u_bcs = FieldBoundaryConditions(west  = nf(u_west_exterior,    pW, :west),
+                                south = vb(u_south_tangential, pS, :south),
+                                north = vb(u_north_tangential, pN, :north))
+v_bcs = FieldBoundaryConditions(south = nf(v_south_exterior,   pS, :south),
+                                north = nf(v_north_exterior,   pN, :north),
+                                west  = vb(v_west_tangential,  pW, :west))
 U_bcs = FieldBoundaryConditions(grid, (Face(), Center(), nothing);  west  = gw(west_U_obc, pW))
 V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(south_V_obc, pS),
                                                                     north = gw(north_V_obc, pN))
@@ -453,10 +467,10 @@ V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(s
                                 west  = SurfaceWaveRadiationBoundaryCondition(),
                                 south = SurfaceWaveRadiationBoundaryCondition(),
                                 north = SurfaceWaveRadiationBoundaryCondition())
-T_bcs = FieldBoundaryConditions(west  = vb(tracer_T_exterior, pW), south = vb(tracer_T_exterior, pS),
-                                north = vb(tracer_T_exterior, pN))
-S_bcs = FieldBoundaryConditions(west  = vb(tracer_S_exterior, pW), south = vb(tracer_S_exterior, pS),
-                                north = vb(tracer_S_exterior, pN))
+T_bcs = FieldBoundaryConditions(west  = vb(tracer_T_exterior, pW, :west), south = vb(tracer_T_exterior, pS, :south),
+                                north = vb(tracer_T_exterior, pN, :north))
+S_bcs = FieldBoundaryConditions(west  = vb(tracer_S_exterior, pW, :west), south = vb(tracer_S_exterior, pS, :south),
+                                north = vb(tracer_S_exterior, pN, :north))
 
 # --- Tracer release forcing and boundaries ------------------------------------
 # Release volume is measured on the grid so the source can be normalised; a continuous-form forcing

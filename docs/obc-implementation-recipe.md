@@ -147,3 +147,62 @@ correspondingly less stress. `canary/` runs 0.02° against a 1/12° parent, a ~4
 is the harder regime and precisely the one where the truncation experiment found the tangential
 condition mattering. Treat the agreement above as a strong check on the **wiring**, and their
 timescales and sponge choice as a weaker guide to **tuning** here.
+
+## ObliqueRadiation breaks on a lateral open boundary that touches land
+
+`ObliqueRadiation` (Oceananigans 0.113, CliMA/Oceananigans.jl#5962) diverges in this configuration at
+0.02°, and the cause is specific: **the scheme cannot be used on a lateral open boundary that
+contains any land cells.** It is not a resolution problem and not a strong-gradient problem in
+general.
+
+### What happened
+
+A 90-day run with `CANARY_RADIATION=oblique` on all three boundaries reached **S = 45.7 psu** (an
+excursion of +8.4 beyond the GLORYS range) within **36 simulated minutes**, with `max|η|` at 2.0 m
+against a normal 0.35 m and worst Δρ oscillating to 5.2 kg/m³. The reported location was cell
+**(332, 1)** — j = 1 is the south boundary, and i = 332 is its **last wet cell**, with land at i = 333.
+
+### The controlled test
+
+Three one-day runs at 0.02°, identical but for which boundary carries the oblique scheme
+(`CANARY_OBLIQUE_SIDES`):
+
+| boundary | land cells | max S | worst Δρ | result |
+|---|---|---|---|---|
+| west | **0** / 225 | 37.30 | 0.20 | **stable**, full day, exit 0 |
+| north | **6** / 575 (1%) | **40.63** | 0.77 | diverged, +3.3 psu |
+| south | **243** / 575 (42%) | **47.06** | 0.91 | diverged, +9.8 psu |
+
+Three things follow. **Any land contact is enough** — six cells out of 575 breaks it. **Severity
+scales with the land fraction**, monotonically. And **resolution is not the cause**: the west boundary
+runs the same 2 km grid and carries the strongest transport in the domain (the Canary Current,
+−6.9e6 m³/s) with no trouble at all.
+
+### Why
+
+The oblique scheme adds a term `NormalRadiation` does not have:
+
+    cₜ = −(∂φ/∂t)(∂φ/∂t̂) / |∇φ|²
+
+`t̂` is the boundary-TANGENTIAL direction, which on the south boundary runs along the coast. At a wet
+cell whose along-boundary neighbour is land, that derivative is evaluated across the land/water
+interface, `cₜ` becomes meaningless, and the tangential advection term injects tracer. The docstring
+says the tangential term "is applied on the lateral boundaries only" and says nothing about a lateral
+boundary that terminates in land.
+
+Note the pattern: the bounds-preserving WENO problem recorded in `canary-domain-sizing.md` was also
+an immersed-boundary interaction, and that file's own source comment hedges on immersed-boundary
+safety. **New boundary/advection schemes in Oceananigans are worth testing against land before use.**
+
+### Consequence here
+
+`CANARY_OBLIQUE_SIDES=west` is the only safe setting on this domain, and it is not a production
+configuration — south and north are open boundaries we need. **ObliqueRadiation is unusable in
+`canary/` until the land case is handled upstream**, e.g. by masking the tangential term at
+land-adjacent points or falling back to normal incidence there.
+
+`CANARY_RADIATION=normal` is unaffected and remains the default: the 7-day 0.02° shakedown with
+everything else identical ran stably (max S 37.0, worst Δρ 0.27).
+
+**A run can diverge and still exit 0.** The south arm completed its full day and returned success
+with S at 44.2 psu. Check the salinity excursion, not the exit code.
