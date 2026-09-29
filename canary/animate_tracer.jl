@@ -17,13 +17,19 @@ dir = length(ARGS) > 1 ? ARGS[2] : joinpath(@__DIR__, "out3mo")
 P   = joinpath(dir, "canary_glorys_")
 
 S = P*"surface"*tag*".jld2"
+# Free surface lives in its own file (same output schedule, so the frames line up). Guarded because
+# a run can be interrupted between writers, leaving one file a frame or two short of the other.
+FS = P*"free_surface"*tag*".jld2"
+ηs = isfile(FS) ? FieldTimeSeries(FS, "η") : nothing
 cs = FieldTimeSeries(S, "c"); acs = FieldTimeSeries(S, "ac")
 Ts = FieldTimeSeries(S, "T"); us = FieldTimeSeries(S, "u"); vs = FieldTimeSeries(S, "v")
-grid = Ts.grid; Nx, Ny, Nz = size(grid); times = Ts.times; nt = length(times)
+grid = Ts.grid; Nx, Ny, Nz = size(grid); times = Ts.times
+nt = isnothing(ηs) ? length(times) : min(length(times), length(ηs.times))
 λ = λnodes(grid, Center(), Center(), Center()); φ = φnodes(grid, Center(), Center(), Center())
 wet = [immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()) ? NaN : 1.0 for i in 1:Nx, j in 1:Ny]
 sfc(fts, n) = Array(interior(fts[n]))[1:Nx, 1:Ny, 1] .* wet
 spd(n) = sqrt.(sfc(us, n).^2 .+ sfc(vs, n).^2)
+ssh(n) = isnothing(ηs) ? fill(NaN, Nx, Ny) : Array(interior(ηs[n]))[1:Nx, 1:Ny, 1] .* wet
 
 # log10(c) with a floor: c spans ~4 decades, so a linear scale cannot show the pathway.
 const CFLOOR = 1e-10
@@ -32,39 +38,28 @@ logc(n) = (a = sfc(cs, n); @. log10(max(a, CFLOOR)))
 # 1e-9 filament and a 1e-5 core look comparably bright. The colour range is capped at a high quantile
 # rather than the max, which is the release cell itself and would flatten everything else to zero.
 linc(n) = sfc(cs, n)
-# Age is only meaningful in the plume CORE. Unbounded WENO undershoots to c < 0 in the dilute edge
-# (6.8% of surface cells at day 90), and ac/c there is numerical noise: at c > 1e-6*cmax the age
-# reaches 29000 days in a 90-day run. Masking at 1% of the instantaneous max keeps the map physical
-# (max 117 d at day 90, 0.07% of cells above elapsed time). The mask stays: bound-preserving WENO
-# would be the principled fix but is non-conservative under z* -- see docs/canary-domain-sizing.md.
-const AGE_MASK_FRAC = 0.01
-function age_days(n)
-    c = sfc(cs, n); ac = sfc(acs, n)
-    cmax = maximum(filter(isfinite, c))
-    thr = AGE_MASK_FRAC * cmax
-    @. ifelse(c > thr, ac / c / 86400, NaN)
-end
 
 allv(f, sub) = filter(isfinite, vcat((vec(f(n)) for n in sub)...))
 sub = unique(round.(Int, range(max(1, nt÷10), nt, length = min(nt, 12))))
 cq = quantile(allv(logc, sub), (0.60, 0.9999))
 lq = (0.0, quantile(allv(linc, sub), 0.99995))
-aq = (0.0, quantile(allv(age_days, sub), 0.995))
 vq = quantile(allv(spd, sub), 0.99)
 Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
-@info @sprintf("log10 c %.2f..%.2f | linear c <= %.3e | age 0..%.1f d | speed <= %.3f | %d frames",
-               cq..., lq[2], aq[2], vq, nt)
+# SSH is signed, so centre the diverging range on zero rather than on the data.
+ηm = isnothing(ηs) ? 1.0 : quantile(abs.(allv(ssh, sub)), 0.995); ηq = (-ηm, ηm)
+@info @sprintf("log10 c %.2f..%.2f | linear c <= %.3e | speed <= %.3f | |SSH| <= %.3f | %d frames",
+               cq..., lq[2], vq, ηm, nt)
 
 n = Observable(1)
 title = @lift(@sprintf("Gran Canaria tracer release, 0.02° (2 km), JRA55-forced  —  day %.1f", times[$n]/86400))
-fig = Figure(size = (1700, 1500))
+fig = Figure(size = (1700, 1020))
 Label(fig[0, 1:4], title; fontsize = 21, font = :bold)
-# last field: whether to overlay the plume outline (the log-c contour)
-panels = ((@lift(logc($n)),     "log₁₀ tracer concentration — the pathway",          :turbo,   cq,      false),
-          (@lift(linc($n)),     "tracer concentration (absolute, linear) — the mass", :turbo,   lq,      false),
-          (@lift(age_days($n)), "mean age (days) — plume core only (c > 1% of max)",  :viridis, aq,      false),
-          (@lift(sfc(Ts, $n)),  "surface T (°C) with plume outline",                 :thermal, Tq,      true),
-          (@lift(spd($n)),      "surface speed (m/s) with plume outline",            :speed,   (0, vq), true))
+# last field: whether to overlay the plume outline. log10(c) is no longer a panel -- a linear scale
+# shows where the MASS is, which is the honest view -- but it still defines the outline contour.
+panels = ((@lift(ssh($n)),     "sea surface height (m) with plume outline",  :balance, ηq,      true),
+          (@lift(sfc(Ts, $n)), "surface T (°C) with plume outline",          :thermal, Tq,      true),
+          (@lift(spd($n)),     "surface speed (m/s) with plume outline",     :speed,   (0, vq), true),
+          (@lift(linc($n)),    "tracer concentration (absolute)",            :turbo,   lq,      false))
 for (m, (data, lab, cmap, rng, outline)) in enumerate(panels)
     r, c = fld1(m, 2), mod1(m, 2)
     ax = Axis(fig[r, 2c-1]; title = lab, titlesize = 13, xlabel = "λ", ylabel = "φ", aspect = DataAspect())
