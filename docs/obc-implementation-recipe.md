@@ -194,12 +194,33 @@ Note the pattern: the bounds-preserving WENO problem recorded in `canary-domain-
 an immersed-boundary interaction, and that file's own source comment hedges on immersed-boundary
 safety. **New boundary/advection schemes in Oceananigans are worth testing against land before use.**
 
+### Correction: oblique DOES work with land elsewhere — on velocities, not tracers
+
+An earlier version of this section concluded that ObliqueRadiation is simply unusable on a boundary
+touching land. That is too strong, and the counter-example is the Mid-Atlantic Bight configuration
+itself. `NumericalEarthSandbox/scripts/04_mab_glorys_tides_reservoirs.jl` — not `02_…`, which is the
+older script — runs oblique on a domain whose open boundaries are cut by the US east coast, and works.
+
+Three differences matter, and they point somewhere more specific than "land":
+
+1. **MAB applies oblique to VELOCITIES, not tracers.** Its default tracer scheme is `TracerReservoir`;
+   oblique is the default for the boundary-normal velocity and optional for the tangential one. Our
+   configuration fed one `radiation` object to everything including T and S — and **what blew up was
+   salinity**. So the failure implicates oblique on TRACERS at a land-terminated boundary, which MAB
+   never exercises.
+2. **MAB runs at 1/12°, the same resolution as GLORYS** — no refinement. `canary/` runs 0.02° against
+   a 1/12° parent, ~4.5x. The interior carries structure at the boundary that the exterior cannot
+   supply, which is exactly what makes a tangential derivative there ill-posed.
+3. **MAB passes `phase_speed_weight`, which does not exist in released 0.113.3.** They track an
+   unreleased branch, so the scheme has damping we do not have. (0.113.3 does have `target_transport`,
+   absent from 0.113.1, so it is still moving.)
+
 ### Consequence here
 
-`CANARY_OBLIQUE_SIDES=west` is the only safe setting on this domain, and it is not a production
-configuration — south and north are open boundaries we need. **ObliqueRadiation is unusable in
-`canary/` until the land case is handled upstream**, e.g. by masking the tangential term at
-land-adjacent points or falling back to normal incidence there.
+`CANARY_OBLIQUE_SIDES=west` is the only safe setting *with oblique applied to everything*. The
+untested configuration, and the one MAB's success points to, is **oblique on the velocities with
+`TracerReservoir` or `NormalRadiation` on T/S**. That is the next thing to try before concluding
+anything about oblique in this domain.
 
 `CANARY_RADIATION=normal` is unaffected and remains the default: the 7-day 0.02° shakedown with
 everything else identical ran stably (max S 37.0, worst Δρ 0.27).
