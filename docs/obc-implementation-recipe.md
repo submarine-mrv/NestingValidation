@@ -215,6 +215,32 @@ Three differences matter, and they point somewhere more specific than "land":
    unreleased branch, so the scheme has damping we do not have. (0.113.3 does have `target_transport`,
    absent from 0.113.1, so it is still moving.)
 
+### The stencil, from the source
+
+Released v0.113.4 computes the along-boundary difference with index clamping and no land check:
+
+    @inline function tangential_differences(φ, t, k, b)
+        T = size(φ, 1)
+        @inbounds begin
+            φ₀ = φ[t, k, b]
+            φ₋ = φ[max(t - 1, 1), k, b]
+            φ₊ = φ[min(t + 1, T), k, b]
+        end
+        return φ₀ - φ₋, φ₊ - φ₀
+    end
+
+Nothing in the file references immersed boundaries, masking or inactive cells. At a wet boundary cell
+whose along-boundary neighbour is land, `φ₊` or `φ₋` is whatever occupies the dry slot, so the
+difference is meaningless — which is the mechanism behind the dose-response above.
+
+Not raised upstream, deliberately: the constraint is likely already understood by the handful of
+people exercising the PR, and the `NestedOceanModel` abstraction coming to NumericalEarth is expected
+to set these schemes automatically with fuller documentation. Recorded here because it constrains
+what `canary/` can use today.
+
+`phase_speed_weight`, which the MAB scripts pass, exists in no release (0.113.4 included) and would
+damp the symptom rather than mask the stencil, so it is not the lever.
+
 ### Consequence here
 
 `CANARY_OBLIQUE_SIDES=west` is the only safe setting *with oblique applied to everything*. The
