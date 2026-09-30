@@ -11,13 +11,17 @@
 # its mass sits near the source. `ac` is still written by the run, so the Deleersnijder age can be
 # recovered; it is just not plotted here.
 #
-# Usage: julia --project=<repo> canary/animate_tracer.jl [tag] [dir]
+# Usage: julia --project=<repo> canary/animate_tracer.jl [tag] [dir] [max_days]
+#
+# max_days truncates the render at a given simulated day, so a run still in flight can be animated
+# to a round number rather than to wherever it happens to have reached.
 
 using Oceananigans, CairoMakie, Printf, Statistics
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node
 
 tag = length(ARGS) > 0 ? ARGS[1] : "_zstar_jraryf_tracer3mo"
 dir = length(ARGS) > 1 ? ARGS[2] : joinpath(@__DIR__, "out3mo")
+max_days = length(ARGS) > 2 ? parse(Float64, ARGS[3]) : Inf
 P   = joinpath(dir, "canary_glorys_")
 
 S = P*"surface"*tag*".jld2"
@@ -29,6 +33,14 @@ cs = FieldTimeSeries(S, "c"); acs = FieldTimeSeries(S, "ac")
 Ts = FieldTimeSeries(S, "T"); us = FieldTimeSeries(S, "u"); vs = FieldTimeSeries(S, "v")
 grid = Ts.grid; Nx, Ny, Nz = size(grid); times = Ts.times
 nt = isnothing(ηs) ? length(times) : min(length(times), length(ηs.times))
+# Truncate at max_days if asked. Frames are counted, not interpolated, so the last frame is the last
+# one at or before the requested day.
+if isfinite(max_days)
+    keep = count(t -> t / 86400 <= max_days + 1e-9, @view times[1:nt])
+    keep == 0 && error("no frames at or before day $(max_days); first frame is day $(times[1]/86400)")
+    nt = keep
+end
+@info @sprintf("rendering %d frames, day %.2f to %.2f", nt, times[1]/86400, times[nt]/86400)
 λ = λnodes(grid, Center(), Center(), Center()); φ = φnodes(grid, Center(), Center(), Center())
 wet = [immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()) ? NaN : 1.0 for i in 1:Nx, j in 1:Ny]
 sfc(fts, n) = Array(interior(fts[n]))[1:Nx, 1:Ny, 1] .* wet

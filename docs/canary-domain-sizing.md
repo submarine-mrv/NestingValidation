@@ -299,3 +299,34 @@ long range by roughly 20%.
 inferred from curvature in a 90-day series, and the well-mixed flush model is carrying the
 extrapolation. Treat the one-year row as the best available estimate, not a measurement. Settling it
 needs a run of order a year — at the 22°N domain's ~29 h per 90 days, about 5 days of GPU.
+
+## The coastal release is a different experiment, and its retention is an upper bound
+
+The 90-day reference run (`_ref90`, Oceananigans 0.113.3) releases from the **south coast of Gran
+Canaria** at 27.8078°N, 15.3971°W in 60 m of water. Every earlier number in this note comes from the
+**north tip** at 28.16°N in 535 m — exposed, in the Canary Current. The two are not comparable, and
+the difference is large: at day 56 the coastal run held **99.3%** of what it had released, against
+~94% for the offshore release at the same age, with a peak concentration half again as high.
+
+The animation makes the reason plain. The coastal plume stays a compact patch against the coast; the
+offshore one spread across the domain. Boundary export follows: the coastal run exports almost
+entirely through the NORTH boundary at ~2e-2 /s, with south six orders of magnitude smaller, where
+the offshore run was south-dominated.
+
+**Do not read this as a reservoir result.** Five things changed at once — Oceananigans 0.110.17 →
+0.113.3, tangential velocity BCs added, the release site moved, oblique radiation on the velocities,
+and TracerReservoir on the tracers. Geography is the most plausible driver, since a release in 60 m
+of sheltered water on the island's lee ventilates far more slowly than one off the exposed tip, and
+barely any tracer reaches a boundary for the reservoir to act on.
+
+**And treat 99.3% as an upper bound.** At 0.02° the model does not resolve the processes that
+disperse a nearshore plume: submesoscale fronts and filaments live at O(1 km), the bottom boundary
+layer in 60 m of water spans only a few of the 12 levels there, and the configuration has no tides,
+no surface waves and no river fluxes. Every one of those omissions removes mixing, so retention is
+biased HIGH and the coastal-versus-offshore gap is likely narrower than measured here. The direction
+is certain even though the magnitude is not.
+
+Settling it needs a controlled comparison — the same configuration at both release sites, varying
+only the release position — and ideally a resolution check. 0.01° fits the current hardware: the
+0.02° run uses 3.4 GB of the L4's 23 GB, so 4x the cells is ~14 GB, and the cost is wall-clock
+(roughly 8x) rather than capability.
