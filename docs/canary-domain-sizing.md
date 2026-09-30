@@ -330,3 +330,26 @@ Settling it needs a controlled comparison — the same configuration at both rel
 only the release position — and ideally a resolution check. 0.01° fits the current hardware: the
 0.02° run uses 3.4 GB of the L4's 23 GB, so 4x the cells is ~14 GB, and the cost is wall-clock
 (roughly 8x) rather than capability.
+
+## The coastal plume recirculates around the islands, which may matter more than retention
+
+Rescaling the tracer panel so the dilute plume is visible (saturating at 1% of the peak — the peak is
+7.1e-4 and its own 99.995th percentile is 7.1e-5, so nearly all the mass sits in a few cells at the
+source) changes the reading of the coastal run.
+
+**The plume travels north-west, wrapping around Gran Canaria and Tenerife — not south-west with the
+Canary Current.** That is consistent with boundary export being almost entirely northward, where the
+offshore release was south-dominated. The island wake appears to recirculate the release rather than
+the mean flow carrying it downstream.
+
+If that holds, the implication runs past domain sizing. Air-sea CO₂ equilibration takes months, so
+tracer held in an island recirculation for weeks may be **substantially equilibrated before it ever
+reaches the Canary Current or the gyre**. Where uptake happens, and how OAE efficiency should be
+counted, would then look quite different from a picture in which treated water is advected promptly
+downstream.
+
+That makes the nearshore resolution question load-bearing rather than a refinement. A recirculation
+set by island wakes at 2 km is exactly the structure most likely to change at higher resolution, and
+it now bears on the uptake calculation and not merely on how much tracer stays inside the domain.
+The 1/60° comparison is the cheap test; `w` at ~109 m, which shows filamentary submesoscale motion
+strongest in the wakes and at the shelf break, is the field to compare.

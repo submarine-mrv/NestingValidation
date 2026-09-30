@@ -42,14 +42,11 @@ wetw = [immersed_inactive_node(i, j, kw, grid, Center(), Center(), Center()) ? N
 sfc(fts, n) = Array(interior(fts[n]))[1:Nx, 1:Ny, Nz] .* wet2
 wlev(n)     = Array(interior(ws[n]))[1:Nx, 1:Ny, kw] .* wetw
 spd(n)      = sqrt.(sfc(us, n).^2 .+ sfc(vs, n).^2)
-# η is on the 6-hourly schedule, so pick its frame by time rather than by index. Plot the ANOMALY:
-# the domain-mean offset is barotropic adjustment and carries no information, and centring a
-# diverging map on zero when the field is almost entirely negative wastes half the colour range.
+# η is on the 6-hourly schedule, so pick its frame by time rather than by index.
 function ssh(n)
     isnothing(ηs) && return fill(NaN, Nx, Ny)
     j = argmin(abs.(Float64.(collect(ηs.times)) .- times[n]))
-    a = Array(interior(ηs[j]))[1:Nx, 1:Ny, 1] .* wet2
-    a .- mean(filter(isfinite, a))
+    return Array(interior(ηs[j]))[1:Nx, 1:Ny, 1] .* wet2
 end
 
 allv(f, sub) = filter(isfinite, vcat((vec(f(n)) for n in sub)...))
@@ -57,14 +54,16 @@ sub = unique(round.(Int, range(max(1, nt÷10), nt, length = min(nt, 10))))
 wm = quantile(abs.(allv(wlev, sub)), 0.995); wq = (-wm, wm)
 vq = quantile(allv(spd, sub), 0.99)
 Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
-ηm = isnothing(ηs) ? 1.0 : quantile(abs.(allv(ssh, sub)), 0.99); ηq = (-ηm, ηm)
-@info @sprintf("|w| <= %.2e m/s | speed <= %.3f | |SSH| <= %.3f", wm, vq, ηm)
+# Absolute SSH barely changes sign here, so a diverging map centred on zero spends half its range
+# on values that never occur. Sequential map over the data's own 1-99% range instead.
+ηq = isnothing(ηs) ? (0.0, 1.0) : quantile(allv(ssh, sub), (0.01, 0.99))
+@info @sprintf("|w| <= %.2e m/s | speed <= %.3f | SSH %.3f..%.3f", wm, vq, ηq...)
 
 n = Observable(1)
 title = @lift(@sprintf("Canary 0.02° — day %.1f", times[$n]/86400))
 fig = Figure(size = (1700, 1020))
 Label(fig[0, 1:4], title; fontsize = 21, font = :bold)
-panels = ((@lift(ssh($n)),     "sea surface height anomaly (m)",                  :balance, ηq),
+panels = ((@lift(ssh($n)),     "sea surface height (m)",                          :haline, ηq),
           (@lift(sfc(Ts, $n)), "surface T (°C)",                                  :thermal, Tq),
           (@lift(spd($n)),     "surface speed (m/s)",                             :speed,   (0, vq)),
           (@lift(wlev($n)),    @sprintf("vertical velocity at %.0f m (m/s)", -zc[kw]), :balance, wq))
