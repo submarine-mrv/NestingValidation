@@ -440,9 +440,34 @@ end
     return (V, face2(p.η, i, clock.time, p))
 end
 
+const res_in  = parse(Float64, get(ENV, "CANARY_RESERVOIR_IN",  "0"))
+const res_out = parse(Float64, get(ENV, "CANARY_RESERVOIR_OUT", "0"))
+const use_reservoir = res_in > 0 || res_out > 0
+if use_reservoir && !isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
+    error("CANARY_RESERVOIR_IN/_OUT need Oceananigans >= 0.113.2; this environment has no TracerReservoir")
+end
+
+# T and S carry their own scheme, separate from the velocities. The Mid-Atlantic Bight configuration
+# runs oblique on VELOCITIES and TracerReservoir on tracers; feeding oblique to T/S is what diverged
+# here, with salinity reaching 47 psu at the south boundary's coastal end.
+#   same      - whatever the velocities use (previous behaviour)
+#   normal    - NormalRadiation
+#   reservoir - TracerReservoir at the CANARY_RESERVOIR_IN/_OUT scales, as MAB does
+ts_kind = get(ENV, "CANARY_TS_SCHEME", "same")
+ts_kind in ("same", "normal", "reservoir") || error("CANARY_TS_SCHEME must be same/normal/reservoir")
+if ts_kind == "reservoir" && !isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
+    error("CANARY_TS_SCHEME=reservoir needs Oceananigans >= 0.113.2")
+end
+ts_scheme(side) = ts_kind == "normal"    ? RAD_NORMAL :
+                  ts_kind == "reservoir" ? getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(
+                                               inflow_length_scale = res_in, outflow_length_scale = res_out) :
+                  rad(side)
+ts_kind == "same" || @info "T/S boundary scheme: $(ts_kind)"
+
 nf(f, p, side) = NormalFlowBoundaryCondition(f; scheme = (normal_kind == "perturbation" ? normal_scheme : rad(side)),
                                                discrete_form = true, parameters = p)
 vb(f, p, side) = ValueBoundaryCondition(f; scheme = rad(side), discrete_form = true, parameters = p)
+vbts(f, p, side) = ValueBoundaryCondition(f; scheme = ts_scheme(side), discrete_form = true, parameters = p)
 gw(f, p) = GravityWaveRadiationBoundaryCondition(f; discrete_form = true, parameters = p)
 
 # The TANGENTIAL velocity carries an open boundary condition as well as the normal one: v at west,
@@ -467,10 +492,10 @@ V_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);  south = gw(s
                                 west  = SurfaceWaveRadiationBoundaryCondition(),
                                 south = SurfaceWaveRadiationBoundaryCondition(),
                                 north = SurfaceWaveRadiationBoundaryCondition())
-T_bcs = FieldBoundaryConditions(west  = vb(tracer_T_exterior, pW, :west), south = vb(tracer_T_exterior, pS, :south),
-                                north = vb(tracer_T_exterior, pN, :north))
-S_bcs = FieldBoundaryConditions(west  = vb(tracer_S_exterior, pW, :west), south = vb(tracer_S_exterior, pS, :south),
-                                north = vb(tracer_S_exterior, pN, :north))
+T_bcs = FieldBoundaryConditions(west  = vbts(tracer_T_exterior, pW, :west), south = vbts(tracer_T_exterior, pS, :south),
+                                north = vbts(tracer_T_exterior, pN, :north))
+S_bcs = FieldBoundaryConditions(west  = vbts(tracer_S_exterior, pW, :west), south = vbts(tracer_S_exterior, pS, :south),
+                                north = vbts(tracer_S_exterior, pN, :north))
 
 # --- Tracer release forcing and boundaries ------------------------------------
 # Release volume is measured on the grid so the source can be normalised; a continuous-form forcing
@@ -561,16 +586,20 @@ const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV =
 # predicted, because the real boundary at 25.0 flushed tracer that would otherwise have come back
 # (docs/canary-domain-sizing.md). Upstream measures ~7-8% lost per oscillation at zero net
 # displacement. Both scales 0, the default, reproduces the memoryless condition exactly.
-const res_in  = parse(Float64, get(ENV, "CANARY_RESERVOIR_IN",  "0"))
-const res_out = parse(Float64, get(ENV, "CANARY_RESERVOIR_OUT", "0"))
-const use_reservoir = res_in > 0 || res_out > 0
-if use_reservoir && !isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
-    error("CANARY_RESERVOIR_IN/_OUT need Oceananigans >= 0.113.2; this environment has no TracerReservoir")
-end
-release_scheme = use_reservoir ?
-    getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(inflow_length_scale  = res_in,
-                                                                outflow_length_scale = res_out) : radiation
-use_reservoir && @info @sprintf("Release-tracer reservoir: inflow L = %.0f m, outflow L = %.0f m", res_in, res_out)
+# The release tracers carry their own reservoir scales, defaulting to the T/S ones. Splitting them
+# is what lets a reservoir on/off experiment vary ONE thing: T and S stay on the reservoir in both
+# arms (oblique needs that to be stable) while only c and ac change.
+# The fallback is NormalRadiation, never `radiation` -- oblique on a tracer at a land-terminated
+# boundary is what drove salinity to 47 psu, and c/ac sit on the same boundaries as T/S.
+const rel_in  = parse(Float64, get(ENV, "CANARY_RELEASE_RESERVOIR_IN",  string(res_in)))
+const rel_out = parse(Float64, get(ENV, "CANARY_RELEASE_RESERVOIR_OUT", string(res_out)))
+const use_release_reservoir = rel_in > 0 || rel_out > 0
+release_scheme = use_release_reservoir ?
+    getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(inflow_length_scale  = rel_in,
+                                                                outflow_length_scale = rel_out) : RAD_NORMAL
+use_release_reservoir ?
+    @info(@sprintf("Release-tracer reservoir: inflow L = %.0f m, outflow L = %.0f m", rel_in, rel_out)) :
+    @info("Release tracers: NormalRadiation (no reservoir)")
 
 tracer_bcs() = FieldBoundaryConditions(
     west  = ValueBoundaryCondition(zero_west; scheme = release_scheme, discrete_form = true),
@@ -1064,7 +1093,7 @@ tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : ""
       (use_atmos ? (jra_multiyear ? "_jra$(Dates.year(run_start))" : "_jraryf") : "") *
       (Δdeg == 0.02 ? "" : "_d$(replace(string(Δdeg), "." => ""))") *
       (φ₁ == 25.0 ? "" : @sprintf("_phis%.1f", φ₁)) * (radiation_kind == "oblique" ? "_oblique" : "") * (normal_kind == "perturbation" ? "_pertadv" : "") *
-      (use_reservoir ? @sprintf("_res%.0f", res_in) : "") *
+      (use_release_reservoir ? @sprintf("_res%.0f", rel_in) : "_nores") * (ts_kind == "same" ? "" : "_ts$(ts_kind)") *
       get(ENV, "CANARY_TAG", "")
 
 # Restart. Oceananigans' `set!(model, file)` cannot read these checkpoints: the Checkpointer serialises
