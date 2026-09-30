@@ -22,6 +22,10 @@ using Oceananigans.ImmersedBoundaries: immersed_inactive_node
 tag = length(ARGS) > 0 ? ARGS[1] : "_zstar_jraryf_tracer3mo"
 dir = length(ARGS) > 1 ? ARGS[2] : joinpath(@__DIR__, "out3mo")
 max_days = length(ARGS) > 2 ? parse(Float64, ARGS[3]) : Inf
+# Fraction of the peak concentration at which the tracer colour scale saturates. The plume spans
+# ~4 decades and nearly all of its mass sits in a few cells at the source, so a range set by the
+# peak renders everything else as the bottom pixel. Saturating the core is the point.
+c_sat = length(ARGS) > 3 ? parse(Float64, ARGS[4]) : 0.05
 P   = joinpath(dir, "canary_glorys_")
 
 S = P*"surface"*tag*".jld2"
@@ -45,7 +49,14 @@ end
 wet = [immersed_inactive_node(i, j, Nz, grid, Center(), Center(), Center()) ? NaN : 1.0 for i in 1:Nx, j in 1:Ny]
 sfc(fts, n) = Array(interior(fts[n]))[1:Nx, 1:Ny, 1] .* wet
 spd(n) = sqrt.(sfc(us, n).^2 .+ sfc(vs, n).^2)
-ssh(n) = isnothing(ηs) ? fill(NaN, Nx, Ny) : Array(interior(ηs[n]))[1:Nx, 1:Ny, 1] .* wet
+# SSH ANOMALY: the domain-mean offset is barotropic adjustment and carries no information, while
+# the spatial gradients are what drive the geostrophic flow. Centring a diverging map on zero when
+# the field is almost entirely negative wastes half the colour range.
+function ssh(n)
+    isnothing(ηs) && return fill(NaN, Nx, Ny)
+    a = Array(interior(ηs[n]))[1:Nx, 1:Ny, 1] .* wet
+    a .- mean(filter(isfinite, a))
+end
 
 # log10(c) with a floor: c spans ~4 decades, so a linear scale cannot show the pathway.
 # Absolute concentration alongside it, because the log panel deliberately hides magnitude: it makes a
@@ -55,19 +66,19 @@ linc(n) = sfc(cs, n)
 
 allv(f, sub) = filter(isfinite, vcat((vec(f(n)) for n in sub)...))
 sub = unique(round.(Int, range(max(1, nt÷10), nt, length = min(nt, 12))))
-lq = (0.0, quantile(allv(linc, sub), 0.99995))
+cpk = maximum(allv(linc, sub))
+lq  = (0.0, c_sat * cpk)
 vq = quantile(allv(spd, sub), 0.99)
 Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
-# SSH is signed, so centre the diverging range on zero rather than on the data.
-ηm = isnothing(ηs) ? 1.0 : quantile(abs.(allv(ssh, sub)), 0.995); ηq = (-ηm, ηm)
-@info @sprintf("linear c <= %.3e | speed <= %.3f | |SSH| <= %.3f | %d frames",
-               lq[2], vq, ηm, nt)
+ηm = isnothing(ηs) ? 1.0 : quantile(abs.(allv(ssh, sub)), 0.99); ηq = (-ηm, ηm)
+@info @sprintf("c peak %.3e, saturating at %.0f%% = %.3e | speed <= %.3f | |SSH'| <= %.3f | %d frames",
+               cpk, 100c_sat, lq[2], vq, ηm, nt)
 
 n = Observable(1)
 title = @lift(@sprintf("Gran Canaria tracer release, 0.02° (2 km), JRA55-forced  —  day %.1f", times[$n]/86400))
 fig = Figure(size = (1700, 1020))
 Label(fig[0, 1:4], title; fontsize = 21, font = :bold)
-panels = ((@lift(ssh($n)),     "sea surface height (m)",          :balance, ηq),
+panels = ((@lift(ssh($n)),     "sea surface height anomaly (m)",  :balance, ηq),
           (@lift(sfc(Ts, $n)), "surface T (°C)",                  :thermal, Tq),
           (@lift(spd($n)),     "surface speed (m/s)",             :speed,   (0, vq)),
           (@lift(linc($n)),    "tracer concentration (absolute)", :turbo,   lq))
