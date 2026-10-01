@@ -26,6 +26,9 @@ max_days = length(ARGS) > 2 ? parse(Float64, ARGS[3]) : Inf
 # ~4 decades and nearly all of its mass sits in a few cells at the source, so a range set by the
 # peak renders everything else as the bottom pixel. Saturating the core is the point.
 c_sat = length(ARGS) > 3 ? parse(Float64, ARGS[4]) : 0.05
+# Absolute cap on the tracer colour scale, overriding c_sat. Needed to compare two runs: a scale set
+# as a fraction of each run's OWN peak makes different runs incomparable by construction.
+c_max_abs = length(ARGS) > 4 ? parse(Float64, ARGS[5]) : NaN
 P   = joinpath(dir, "canary_glorys_")
 
 S = P*"surface"*tag*".jld2"
@@ -63,7 +66,7 @@ linc(n) = sfc(cs, n)
 allv(f, sub) = filter(isfinite, vcat((vec(f(n)) for n in sub)...))
 sub = unique(round.(Int, range(max(1, nt÷10), nt, length = min(nt, 12))))
 cpk = maximum(allv(linc, sub))
-lq  = (0.0, c_sat * cpk)
+lq  = (0.0, isfinite(c_max_abs) ? c_max_abs : c_sat * cpk)
 vq = quantile(allv(spd, sub), 0.99)
 Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
 # Absolute SSH barely changes sign here, so a diverging map centred on zero spends half its range
@@ -73,7 +76,12 @@ Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
                cpk, 100c_sat, lq[2], vq, ηq..., nt)
 
 n = Observable(1)
-title = @lift(@sprintf("Gran Canaria tracer release, 0.02° (2 km), JRA55-forced  —  day %.1f", times[$n]/86400))
+# Resolution comes from the grid, never a literal: a hardcoded "0.02°" silently mislabelled the
+# 1/60° run in a side-by-side resolution comparison.
+Δdeg = λ[2] - λ[1]
+Δkm  = Δdeg * 111.32 * cosd(mean(φ))
+title = @lift(@sprintf("Gran Canaria tracer release, %.4g° (%.2f km), JRA55-forced  —  day %.1f",
+                       Δdeg, Δkm, times[$n]/86400))
 fig = Figure(size = (1700, 1020))
 Label(fig[0, 1:4], title; fontsize = 21, font = :bold)
 panels = ((@lift(ssh($n)),     "sea surface height (m)",         :haline, ηq),

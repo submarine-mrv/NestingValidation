@@ -60,7 +60,10 @@ Tq = quantile(allv(n -> sfc(Ts, n), sub), (0.005, 0.995))
 @info @sprintf("|w| <= %.2e m/s | speed <= %.3f | SSH %.3f..%.3f", wm, vq, ηq...)
 
 n = Observable(1)
-title = @lift(@sprintf("Canary 0.02° — day %.1f", times[$n]/86400))
+# Resolution from the grid, not a literal -- see animate_tracer.jl.
+Δdeg = λ[2] - λ[1]
+Δkm  = Δdeg * 111.32 * cosd(mean(φ))
+title = @lift(@sprintf("Canary %.4g° (%.2f km) — day %.1f", Δdeg, Δkm, times[$n]/86400))
 fig = Figure(size = (1700, 1020))
 Label(fig[0, 1:4], title; fontsize = 21, font = :bold)
 panels = ((@lift(ssh($n)),     "sea surface height (m)",                          :haline, ηq),
