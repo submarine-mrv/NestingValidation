@@ -6,6 +6,9 @@ parent product.
 - `salish_sea/` — Salish Sea / Juan de Fuca, GLORYS-forced. Validated: stable 7-day run at 0.74 km.
 - `red_sea/` — Red Sea + Gulf of Aden, GLORYS-forced, optional JRA55 atmosphere. Validated both ways:
   stable 7-day runs at 5.2 km (17.5 h unforced, 22.9 h forced). Strait transports not yet converged.
+- `benchmarking/` — the Canary model as a ModelBenchmarking template plus the config that is the
+  record of a run. The model used to be `canary/canary_glorys_obc.jl` with 38 `CANARY_*` env knobs;
+  it has no defaults now, so the config is the only place a value can come from. See that README.
 - `canary/` — Canary upwelling, NW Africa. Three open boundaries, wind-driven interior, islands
   inside the domain. Validated in both seasons at 2 km (January 38.8 h, July 36.3 h). Runs on GCP GPU
   and matches CPU (see `canary/README.md` and `docs/environment.md`); 0.02° not yet run on GPU.

@@ -1,6 +1,6 @@
 # How far south must the Canary domain reach?
 
-Status as of 2026-09-25. Model: `canary/canary_glorys_obc.jl`. Analysis: `canary/virtual_boundary.jl`.
+Status as of 2026-09-25. Model: `benchmarking/canary_template.jl`. Analysis: `canary/virtual_boundary.jl`.
 
 The Canary configuration exists to answer a residence-time question: water released at a point on
 Gran Canaria (−15.38°E, 28.16°N) — a CDR-style continuous surface source — drifts southwest with the
@@ -90,7 +90,7 @@ multi-year one.**
 Plain WENO undershoots into c < 0 in the dilute plume edge — 6.8% of surface cells at day 90, and
 enough to make the pointwise age `ac/c` meaningless there (ages of 29000 days in a 90-day run), which
 is why `animate_tracer.jl` masks age below 1% of the instantaneous max. The obvious fix is WENO's
-`bounds` argument, and `CANARY_TRACER_BOUNDS=1` wires it up. **It must stay off.**
+`bounds` argument, and `tracer_bounds: ["true"]` wires it up. **It must stay off.**
 
 Two 0.1° runs differing only in the tracer scheme (`_d01_bwenotest` vs `_d01_plainweno`, same grid,
 same times, identical T ranges) measure the release against a source normalised to exactly 1 unit/s:
@@ -138,7 +138,7 @@ zero** (1e−60): with the southern boundary moved to 686 km the plume has not r
 leaves does so through the near northern edge. So moving the southern boundary works as intended —
 and it promotes the *northern* boundary, not the western one, to dominant leak in the interim.
 
-This is why the `CANARY_PHI_S` knob is only half a solution, though the other half is not the one the
+This is why the `lat_south` knob is only half a solution, though the other half is not the one the
 earlier draft named: a domain-sizing study that moves the southern boundary alone leaves both the
 northern boundary at 149 km and the western at 600 km fixed.
 
@@ -174,7 +174,7 @@ Not settled:
 
 - **Every number here is an upper bound** on retention, by the re-entry bias above. The size of that
   bias is unmeasured. The way to measure it is a real run at φ_S = 22.0 compared against this run's
-  virtual boundary at the same latitude — that is what `CANARY_PHI_S` is for, and it has not been
+  virtual boundary at the same latitude — that is what `lat_south` is for, and it has not been
   run.
 - **The extrapolation past L ≈ 270 km is not validated**, and linear vs quadratic τ(L) is unresolved.
   The φ_S = 22.0 run would test that too, since its virtual boundaries would extend the measured

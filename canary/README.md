@@ -4,7 +4,7 @@ Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA5
 0.02° (2 km), January (38.8 h) and July (36.3 h) — plus two 90-day GPU tracer runs, at φ_S = 25.0
 (13.6 h) and φ_S = 22.0 (1.29 days), which together answer the domain-sizing question: at 90 days
 the 25°N domain was already large enough. See `../docs/canary-domain-sizing.md`.**
-Model: `canary_glorys_obc.jl`.
+Model: `benchmarking/canary_template.jl`.
 
 ## Why this domain
 
@@ -171,7 +171,7 @@ upwelling filaments and needs a GPU.
 **The 21 h figure was wrong and the reason is worth recording.** It scaled Δt from the Red Sea by grid
 spacing, but the binding constraint here is **vertical, not horizontal**: with a 1.4 m surface cell and
 wind-driven convection, Δt settles at 1.4–3.3 min where the horizontal CFL alone (max|u| ≈ 0.5 m/s over
-2 km) would allow ~7 min. At ~40 s/iter that is **~73 h for 7 days**. Raising `CANARY_ZSCALE` would buy
+2 km) would allow ~7 min. At ~40 s/iter that is **~73 h for 7 days**. Raising `z_scale` would buy
 timestep at the cost of the surface resolution that motivated `scale = 700`.
 
 ## Vertical grid
@@ -184,8 +184,8 @@ source water for coastal upwelling here is around 100 m. The abyss is quiescent 
 cells. 32 levels over 4800 m is 50% more depth than the Red Sea on the same budget, so the deep
 resolution is genuinely thin — a limitation for anything involving deep water masses.
 
-z\* is on by default, as in `red_sea/`: with a 1.2 m surface cell the O(max|η|/Δz_top) error of a
-static (linear free surface) grid is not small. `CANARY_ZSTAR=0` falls back.
+z\* is on in every run so far, as in `red_sea/`: with a 1.2 m surface cell the O(max|η|/Δz_top) error of a
+static (linear free surface) grid is not small. `use_zstar: ["false"]` falls back.
 
 ## Differences from the other scripts
 
@@ -194,25 +194,32 @@ static (linear free surface) grid is not small. `CANARY_ZSTAR=0` falls back.
   itself, so the closures return the exterior value only — **do not pre-flip signs**, which is exactly
   the double inversion `red_sea/` carried through its whole validation run.
 - **Sponge on all three edges**, combined with `max()` so corners do not double-count. 0.25°
-  (`CANARY_SPONGE`) — the upwelling front sits against the eastern coast, far from every sponge.
+  (`sponge_width_deg`) — the upwelling front sits against the eastern coast, far from every sponge.
 - **An upwelling index in the progress output**: coastal minus offshore SST at matched latitudes, plus
   mean temperature at the ~100 m source depth. This is the signal the domain exists to produce, and
   the other two configurations needed no equivalent. At initialisation it reads **ΔT = −2.25 °C** —
   the upwelling is already in GLORYS; the question is whether the model holds or sharpens it.
 - **No net-transport correction** (see above).
 
-## Env flags
+## Parameters
 
-| flag | default | |
+There are no defaults to document: the model is a template and every value comes from
+`../benchmarking/config_canary.yaml`, which is the record of what a run was. The column below is
+what that config holds as committed (the 90-day `_ref90` reference run). See
+`../benchmarking/README.md` for rendering and launching.
+
+| parameter | reference value | |
 |---|---|---|
-| `CANARY_DELTA` | `0.02` | horizontal resolution, degrees |
-| `CANARY_START` | `1993-01-01` | run start |
-| `CANARY_DEPTH` | `4800` | **hard cap** — see the depth section |
-| `CANARY_ZSCALE` | `700` | vertical stretching |
-| `CANARY_SPONGE` | `0.25` | nudging band width, degrees |
-| `CANARY_ATMOS` | `JRA` | `JRA` or `none` (boundary-only control) |
-| `CANARY_JRA_DATASET` | `repeat` | `repeat` or `multiyear` |
-| `CANARY_ZSTAR` / `CANARY_PASSES` / `CANARY_WENO_ORDER` / `CANARY_STOP_DAYS` / `CANARY_TAG` | | as in `red_sea/` |
+| `delta_deg` | `0.02` | horizontal resolution, degrees |
+| `start_date` | `1993-01-01` | run start |
+| `depth` | `4800` | **hard cap** — see the depth section |
+| `z_scale` | `700` | vertical stretching |
+| `sponge_width_deg` | `0.25` | nudging band width, degrees |
+| `atmosphere` | `JRA` | `JRA` or `none` (boundary-only control) |
+| `jra_dataset` | `repeat` | `repeat` or `multiyear` |
+| `use_zstar` / `bathymetry_passes` / `weno_order` / `stop_days` / `run_tag` | | as in `red_sea/` |
+
+The other 48 are in the config, grouped and commented.
 
 ## Validation — 7-day run at 0.02°, JRA55-forced, January
 
@@ -287,7 +294,7 @@ domain's headline signal, and the July run is the real test.
 
 ## July vs January — the upwelling signal
 
-Same configuration, same resolution, 7 days each. `CANARY_START=1993-07-01`, 3030 iterations,
+Same configuration, same resolution, 7 days each. `start_date: ["1993-07-01"]`, 3030 iterations,
 **36.3 h wall**.
 
 ### The headline: the child sharpens the gradient in the strong season
@@ -349,7 +356,7 @@ in a narrow coastal strip along the upwelling front — visible in the animation
 
 ## Passive tracer release
 
-`CANARY_TRACER=1` adds a continuous point release for pathway and residence-time work — the kind an
+`use_tracer: ["true"]` adds a continuous point release for pathway and residence-time work — the kind an
 ocean alkalinity enhancement outfall would represent.
 
 **Two tracers, not one**, following Deleersnijder's age formulation:
@@ -365,8 +372,8 @@ since surface contact, not time since release.
 | | |
 |---|---|
 | default site | Las Palmas, **−15.38°E, 28.16°N** — wet, 535 m, 47 of 49 neighbouring cells wet, the island's main port |
-| shape | **2-D Gaussian at the surface**, σ = 0.02° (`CANARY_RELEASE_SIGMA`) — one grid cell at 0.02° (1.98 km zonal, 2.22 km meridional) — cut off at 3σ |
-| depth | top model cell only, 1.5 m (`CANARY_RELEASE_DEPTH`); the top cell is 1.21 m thick |
+| shape | **2-D Gaussian at the surface**, σ = 0.02° (`release_sigma_deg`) — one grid cell at 0.02° (1.98 km zonal, 2.22 km meridional) — cut off at 3σ |
+| depth | top model cell only, 1.5 m (`release_depth_m`); the top cell is 1.21 m thick |
 | source | normalised to **∫S dV = 1 unit/s**, so cumulative input equals elapsed seconds |
 | boundaries | **zero-value at all three open edges** — the default no-flux would trap tracer and make residence time meaningless |
 
@@ -382,7 +389,7 @@ the metric operators) is the remaining blocker.
 
 ## Running on GPU
 
-`CANARY_ARCH=GPU`. The long tracer runs need it: residence time in this region is weeks to months,
+`use_gpu: ["true"]`. The long tracer runs need it: residence time in this region is weeks to months,
 which at ~39 s/iter on CPU is days of wall clock.
 
 The boundary conditions and the tracer forcing were already device kernels — the release source is a
@@ -410,7 +417,7 @@ L4 using **2.95 GB** of GPU memory — so memory is not a constraint and a large
 would fit. With Δt settling at 1.4–4.5 min, a 3-month tracer run is **~15–22 h** (≈ $13–19 at
 g2-standard-8 rates). Output at 0.02°: a 3-D snapshot is ~230 MB per frame (daily over 3 months ≈ 21 GB,
 every 3 days ≈ 7 GB); 6-hourly surface + boundary sections over 3 months are ~3 GB together.
-`CANARY_OUTPUT_HOURS`, `CANARY_SNAPSHOT_HOURS` and `CANARY_PROGRESS_ITERS` set the cadences.
+`output_hours`, `snapshot_hours` and `progress_iters` set the cadences.
 
 **Verified on GPU, against CPU.** The full configuration — JRA55 atmosphere, tracer release, three
 open boundaries, nudging, z\* — runs on an NVIDIA L4 and matches a CPU run of the same configuration in
@@ -451,7 +458,7 @@ types. The parent is now interpolated onto the three boundary faces once at setu
 time in the kernel.
 
 With a static vertical grid this is **exactly** equivalent to the old sampling (identical output over
-11 diagnostic blocks, old vs new, `CANARY_ZSTAR=0`). Under z\* it is not: the old kernels sampled the
+11 diagnostic blocks, old vs new, `use_zstar: ["false"]`). Under z\* it is not: the old kernels sampled the
 parent at depths displaced by the free surface each step, the precomputed arrays sample at rest-state
 depths. That moves boundary transports by 0.1–0.9% and salt drift by ~0.1% on the 0.1° smoke test —
 small against the parent residual the boundary already absorbs, so accepted rather than corrected.
@@ -469,13 +476,13 @@ validated baseline, so it is computed live on host copies instead.
 
 ## Long runs: output cadence, checkpoints and restarts
 
-| flag | default | |
+| parameter | reference value | |
 |---|---|---|
-| `CANARY_OUTPUT_HOURS` | 6 | surface **and** boundary sections (they share a schedule) |
-| `CANARY_SNAPSHOT_HOURS` | 24 | 3-D snapshots — the volume driver, ~230 MB/frame at 0.02° |
-| `CANARY_PROGRESS_ITERS` | 10 | `progress` copies every 3-D field to the host and loops over all wet cells |
-| `CANARY_CHECKPOINT_DAYS` | 10 | one checkpoint kept at a time (`cleanup`), ~560 MB at 0.02° |
-| `CANARY_PICKUP` | — | `auto` takes the newest checkpoint for this tag, or give a path |
+| `output_hours` | 6 | surface **and** boundary sections (they share a schedule) |
+| `snapshot_hours` | 72 | 3-D snapshots — the volume driver, ~230 MB/frame at 0.02° |
+| `progress_iters` | 10 | `progress` copies every 3-D field to the host and loops over all wet cells |
+| `checkpoint_days` | 10 | one checkpoint kept at a time (`cleanup`), ~560 MB at 0.02° |
+| `pickup` | — | `auto` takes the newest checkpoint for this tag, or give a path |
 
 **Restarts need a custom reader, and the reason is a trap.** `Checkpointer(ocean.model; …)` does *not*
 checkpoint the ocean model: the writer serialises whatever model its simulation holds, which here is the
@@ -505,7 +512,7 @@ test. Not yet established:
   wall, **88.8% of the release still in the domain at day 90**, ~81% of the loss through the south
   boundary. Residence timescales and the domain-size implications are in
   `../docs/canary-domain-sizing.md`.
-- ~~A domain-sizing run has not happened.~~ **Done** — 90 days at `CANARY_PHI_S=22.0`, 1.29 days on
+- ~~A domain-sizing run has not happened.~~ **Done** — 90 days at `lat_south: [22.0]`, 1.29 days on
   an L4, identical to the 25°N run but for the southern boundary. Retention saturates: going from
   352 km to 574 km of southward distance buys **0.44 percentage points** (90.90% → 91.34% at day 90),
   so **the 25°N domain was already large enough at 90 days**. The virtual-boundary method that said
@@ -516,7 +523,7 @@ test. Not yet established:
   an L4 and matches CPU at 0.1°, and runs at 0.02° (**1.8 s/iter, 2.95 GB of the L4's 24 GB**).
 - **GPU/CPU equivalence was checked at 0.1°, not at 0.02°** — a CPU run at the finer grid costs ~39 h.
 - **January is the weak-upwelling season.** The window matches `salish_sea/` and `red_sea/`, but
-  Canary upwelling peaks in boreal summer at these latitudes. `CANARY_START=1993-07-01` gives the
+  Canary upwelling peaks in boreal summer at these latitudes. `start_date: ["1993-07-01"]` gives the
   strong case, and the domain's own signal will be clearer there.
 - **The south boundary is only 58% wet** — the African coast cuts through its eastern end, where a
   sponge meets a coastal boundary. Structurally the least clean part of the domain, and the most

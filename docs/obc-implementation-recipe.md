@@ -129,7 +129,7 @@ always computed. Two implementations converging on that independently is decent 
 2. **Normal velocity: MAB uses `PerturbationAdvection`, this uses the radiation scheme.** They apply
    different schemes to the normal component (`PerturbationAdvection`) and to the tangential
    component and tracers (`NormalRadiation`); `canary/` used one scheme throughout.
-   `CANARY_NORMAL_SCHEME=perturbation` reproduces their split. Available on 0.110.17 as well as
+   `normal_scheme: ["perturbation"]` reproduces their split. Available on 0.110.17 as well as
    0.113, so this needs no migration.
 
 3. **MAB has no sponge at all** — interior restoring was removed and all forcing enters through the
@@ -157,7 +157,7 @@ general.
 
 ### What happened
 
-A 90-day run with `CANARY_RADIATION=oblique` on all three boundaries reached **S = 45.7 psu** (an
+A 90-day run with `radiation: ["oblique"]` on all three boundaries reached **S = 45.7 psu** (an
 excursion of +8.4 beyond the GLORYS range) within **36 simulated minutes**, with `max|η|` at 2.0 m
 against a normal 0.35 m and worst Δρ oscillating to 5.2 kg/m³. The reported location was cell
 **(332, 1)** — j = 1 is the south boundary, and i = 332 is its **last wet cell**, with land at i = 333.
@@ -165,7 +165,7 @@ against a normal 0.35 m and worst Δρ oscillating to 5.2 kg/m³. The reported l
 ### The controlled test
 
 Three one-day runs at 0.02°, identical but for which boundary carries the oblique scheme
-(`CANARY_OBLIQUE_SIDES`):
+(`oblique_sides`):
 
 | boundary | land cells | max S | worst Δρ | result |
 |---|---|---|---|---|
@@ -243,12 +243,12 @@ damp the symptom rather than mask the stencil, so it is not the lever.
 
 ### Consequence here
 
-`CANARY_OBLIQUE_SIDES=west` is the only safe setting *with oblique applied to everything*. The
+`oblique_sides: ["west"]` is the only safe setting *with oblique applied to everything*. The
 untested configuration, and the one MAB's success points to, is **oblique on the velocities with
 `TracerReservoir` or `NormalRadiation` on T/S**. That is the next thing to try before concluding
 anything about oblique in this domain.
 
-`CANARY_RADIATION=normal` is unaffected and remains the default: the 7-day 0.02° shakedown with
+`radiation: ["normal"]` is unaffected, and is what every run before 0.113 used: the 7-day 0.02° shakedown with
 everything else identical ran stably (max S 37.0, worst Δρ 0.27).
 
 **A run can diverge and still exit 0.** The south arm completed its full day and returned success

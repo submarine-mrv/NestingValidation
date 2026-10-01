@@ -10,7 +10,12 @@
 #      in deep water, and the deepest point sits on the west/north corner -- i.e. the coverage
 #      deficit bites exactly where boundary values are prescribed.
 #
-# Read-only. Honours CANARY_DELTA / CANARY_PASSES / CANARY_DEPTH.
+# Read-only, and still ENV-driven: it builds a grid to inspect rather than a run to publish, so it
+# has no output whose provenance needs recording. The catch is that its defaults are a SECOND copy of
+# the grid parameters -- if benchmarking/config_canary.yaml changes delta_deg, bathymetry_passes,
+# depth, z_scale or lat_south, pass the matching CANARY_* values here or the check describes a grid
+# the model no longer builds.
+#   CANARY_DELTA  CANARY_PASSES  CANARY_DEPTH  CANARY_ZSCALE  CANARY_PHI_S  CANARY_START  CANARY_GLORYS_DIR
 
 using Oceananigans, NumericalEarth, CopernicusMarine, CairoMakie
 using Dates, Printf, Statistics

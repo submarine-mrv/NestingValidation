@@ -4,7 +4,7 @@
 # the interior, so a surface-level w panel shows nothing. This reads w from the 3-D snapshots at a
 # chosen depth -- default ~100 m, which is the depth the run already treats as the upwelling source.
 #
-# Snapshots are written every CANARY_SNAPSHOT_HOURS (72 h here), so this animation is far coarser in
+# Snapshots are written every snapshot_hours (72 h here), so this animation is far coarser in
 # time than animate_tracer.jl. SSH, SST and speed come from the same snapshots for consistency
 # rather than from the 6-hourly surface file.
 #

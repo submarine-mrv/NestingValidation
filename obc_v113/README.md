@@ -24,7 +24,7 @@ a migration, not a bump. Keep it off the critical path.
 
 ## What the swap would actually touch
 
-`canary_glorys_obc.jl` builds one `radiation` object and feeds it to both `NormalFlowBoundaryCondition`
+`benchmarking/canary_template.jl` builds one `radiation` object and feeds it to both `NormalFlowBoundaryCondition`
 (normal velocity) and `ValueBoundaryCondition` (T, S, and the release tracers). The keyword signatures
 are identical, so those call sites change by one word:
 
@@ -110,7 +110,7 @@ NumericalEarth 0.8 adds a `NestedModels` submodule -- `NestedModel`, `NestedSimu
 `parent_boundary_conditions`, `parent_forcings`, `exchange_state!`, `reconstruct_parent_state`,
 `blend_parent_terrain!`. `parent_boundary_conditions` builds `FieldBoundaryConditions` for a child's
 lateral boundaries straight from a parent's `FieldTimeSeries`, taking `variables`, `sides` and
-per-field `schemes` -- which is what `canary_glorys_obc.jl` hand-rolls.
+per-field `schemes` -- which is what `benchmarking/canary_template.jl` hand-rolls.
 
 **It is atmosphere-only today** (the submodule's sources mention `atmosphere` and never `ocean`), so
 it does not apply to this repo yet. The ocean abstraction is planned upstream; when it lands it should
@@ -178,7 +178,7 @@ to matter needs no migration, while the migration buys a scheme change that did 
 
 ## Migration diff, and what the time convention does and does not explain
 
-Same code, same inputs, 0.1° for 2 days. `v113t0` is 0.113 with `CANARY_PARENT_T0=0`, which restores
+Same code, same inputs, 0.1° for 2 days. `v113t0` is 0.113 with `parent_t0: [0]`, which restores
 0.6.1's indexing and so isolates the time-convention change from everything else.
 
 | field | 0.110.17 | 0.113 | 0.113, old origin | explained by the 12 h shift? |
