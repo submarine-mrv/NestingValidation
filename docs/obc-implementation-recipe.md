@@ -148,6 +148,46 @@ is the harder regime and precisely the one where the truncation experiment found
 condition mattering. Treat the agreement above as a strong check on the **wiring**, and their
 timescales and sponge choice as a weaker guide to **tuning** here.
 
+## Shelved: upstreaming parent-bathymetry matching into NumericalEarth
+
+Trap 6 above — child bathymetry deeper than the parent's valid data — is fixed here by a *global*
+cap (`depth: [4800]`), which is the wrong generalisation twice over. The constraint binds on the
+open-boundary rim, where the deficit actually bites (the west/north corner, per
+`canary/glorys_interior_check.jl`), yet the cap clips 1.2% of all columns by up to 85 m. Worse, it
+couples: `z_reference` spans `0..-depth`, so lowering `depth` restretches every vertical level in
+the domain to satisfy a constraint on a thin band.
+
+`enri66/NumericalEarthSandbox`'s `scripts/glorys_bathymetry.jl` has the right shape instead —
+`match_boundary_bathymetry!(bottom_height, grid, data_dir; region, sides, n_match, minimum_depth)`,
+a raised-cosine blend of the child's bottom toward the parent's over `n_match` cells inward from the
+named sides. Three things it gets right: it reads GLORYS's **static `deptho`** rather than the
+valid/NaN mask of an inpainted tracer (the mask says where values survive inpainting, not where the
+seafloor is); it blends either direction, where a cap can only shallow the child; and it preserves
+both land masks rather than blending them into a meaningless fractional mask.
+
+If this is picked up, the gaps to close, in order:
+
+1. `n_match` is a fixed cell count. The atmosphere side already hit this and documented it:
+   `default_terrain_blend_width` exists because a fixed count steepens the parent→child transition
+   as ~1/Δx and destabilised high-resolution runs at the boundary corner. Bottom slope has the same
+   geometry, and 0.02° to 1/60° spans 5× here. Take a physical blend length instead.
+2. It is purely 2-D, so it does **not** settle trap 6. Matching `deptho` makes the two seafloors
+   agree; feasibility is whether every child cell needing a parent value has one, which depends on
+   the child's z levels against the parent's valid ones. Those can disagree with `deptho` matched.
+3. `deptho` is a CMEMS convention — the function's best property is its least portable one. A
+   parent-agnostic version needs a per-dataset `parent_bottom_height(metadata)` trait whose fallback
+   errors honestly rather than silently reaching for an inpainted field's mask.
+
+Where it would belong: the repair as `NestedModels/parent_bathymetry.jl`, beside the existing
+`blend_parent_terrain!` (same three-layer split — grid-level kernel, model-specific orchestration,
+resolution-aware default); the vertical check as a separate `validate_parent_depth_coverage` in the
+`DataWrangling` `validate_dataset_coverage` family, fatal at open boundaries and warn-and-inpaint in
+the interior. Not inside `regrid_bathymetry`: it caches on `bathymetry_regridding_key`, which knows
+nothing about a parent dataset or which sides are open, so a cached field could silently be one
+matched to a different parent. Two functions, not one — and only the second would have flagged
+Canary before the 39-hour run. Coastline/mask mismatch is a third, topological problem that shares
+the diagnosis layer and nothing else.
+
 ## ObliqueRadiation breaks on a lateral open boundary that touches land
 
 `ObliqueRadiation` (Oceananigans 0.113, CliMA/Oceananigans.jl#5962) diverges in this configuration at
