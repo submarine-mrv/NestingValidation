@@ -100,7 +100,10 @@ colgap!(fig.layout, 6)
 # Name the outputs from the non-default part of the tag, so a domain-sizing run does not overwrite
 # the phi_S = 25 animation. The 25N tag reduces to "", keeping its original filenames.
 suffix = replace(tag, "_zstar_jraryf" => "", "_tracer3mo" => "")
-out = joinpath(@__DIR__, "canary_tracer_90day$(suffix).mp4")
+# Day count from the frames actually rendered, not a literal: "90day" was hardcoded, so a run
+# truncated by max_days -- or a shorter run -- wrote a filename claiming 90 days.
+dlast = round(Int, times[nt] / 86400)
+out = joinpath(@__DIR__, "canary_tracer_$(dlast)day$(suffix).mp4")
 record(fig, out, 1:nt; framerate = 6) do i; n[] = i; end
-n[] = nt; save(joinpath(@__DIR__, "canary_tracer_day90$(suffix).png"), fig)
+n[] = nt; save(joinpath(@__DIR__, "canary_tracer_day$(dlast)$(suffix).png"), fig)
 @info "Saved $out"
