@@ -111,7 +111,42 @@ using Oceananigans.Operators: Δzᶜᶜᶜ, Δzᶠᶜᶜ, Axᶠᶜᶜ, Ayᶜᶠ�
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node, immersed_peripheral_node
 using Oceananigans.Units: Time
 
-radiation = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+# Scheme selection. Defaults reproduce the validated 7-day runs exactly: NormalRadiation on
+# everything, no reservoir. The alternatives are the Mid-Atlantic Bight pattern that canary/ settled
+# on -- oblique on VELOCITIES, TracerReservoir on T/S -- see docs/obc-implementation-recipe.md.
+const HAS_OBLIQUE   = isdefined(Oceananigans.BoundaryConditions, :ObliqueRadiation)
+const HAS_RESERVOIR = isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
+
+const RAD_NORMAL = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+
+# REDSEA_RADIATION=oblique selects Raymond & Kuo (1984) two-dimensional radiation (Oceananigans
+# >= 0.113). Only ever applied to velocities here: oblique on TRACERS at a boundary that terminates
+# in land drove salinity to 45.7 psu in canary/, and the east boundary is cut by the Yemeni and
+# Somali coasts at both ends.
+radiation_kind = get(ENV, "REDSEA_RADIATION", "normal")
+radiation_kind in ("normal", "oblique") || error("REDSEA_RADIATION must be \"normal\" or \"oblique\"")
+radiation_kind == "oblique" && !HAS_OBLIQUE &&
+    error("REDSEA_RADIATION=oblique needs Oceananigans >= 0.113; this environment has no ObliqueRadiation")
+radiation = radiation_kind == "oblique" ?
+    getfield(Oceananigans.BoundaryConditions, :ObliqueRadiation)(inflow_timescale = 6hours, outflow_timescale = Inf) :
+    RAD_NORMAL
+
+# T/S carry their own scheme. The reservoir (MOM6-style, metres) gives the boundary a memory: a
+# memoryless Value condition hands re-entering water the exterior value regardless of what just
+# left. Bab el-Mandeb is a two-layer exchange -- surface inflow, deep outflow -- so water leaving
+# and returning is the NORMAL state here, not an edge case.
+const res_in  = parse(Float64, get(ENV, "REDSEA_RESERVOIR_IN",  "0"))
+const res_out = parse(Float64, get(ENV, "REDSEA_RESERVOIR_OUT", "0"))
+ts_kind = get(ENV, "REDSEA_TS_SCHEME", "same")
+ts_kind in ("same", "normal", "reservoir") || error("REDSEA_TS_SCHEME must be same/normal/reservoir")
+ts_kind == "reservoir" && !HAS_RESERVOIR &&
+    error("REDSEA_TS_SCHEME=reservoir needs Oceananigans >= 0.113.2")
+ts_scheme = ts_kind == "normal"    ? RAD_NORMAL :
+            ts_kind == "reservoir" ? getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(
+                                         inflow_length_scale = res_in, outflow_length_scale = res_out) :
+            radiation
+@info "Open-boundary scheme: velocities $(radiation_kind), T/S $(ts_kind)" *
+      (ts_kind == "reservoir" ? @sprintf(" (reservoir in %.0f m, out %.0f m)", res_in, res_out) : "")
 
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) =
     !immersed_peripheral_node(i, j, k, grid, ℓx, ℓy, ℓz) & !immersed_inactive_node(i, j, k, grid, ℓx, ℓy, ℓz)
@@ -159,8 +194,17 @@ fill_down_fts!(fts, floor) = (for n in 1:length(fts.times); fill_down!(interior(
 # All time indices resident: the default of 2 reloads slices from disk as the clock advances, which
 # would silently undo the repair above.
 n_times = length(boundary_dates)
+# time_indexing: DatasetRestoring defaults to Cyclical(), and these series are not only the interior
+# sponge -- their field_time_series is what the open-boundary exterior values are sampled from. Under
+# NumericalEarth 0.8 GLORYSDaily is stamped at the CENTRE of its daily-mean window (12:00), so the
+# first sample lands 12 h AFTER the run starts, and Cyclical fills that gap by wrapping to the FAR END
+# of the record: the last day of the series would drive the first half-day of the run, at both the
+# boundary and the sponge. Clamp holds the first sample instead (persistence), matching what the
+# hand-rolled kernels in benchmarking/canary_template.jl do. A lead-in day is not available: GLORYS
+# itself begins 1993-01-01, which is run_start.
 restoring_kw = (; rate = restoring_rate, mask = boundary_mask, inpainting = bc_inpainting,
-                  time_indices_in_memory = n_times)
+                  time_indices_in_memory = n_times,
+                  time_indexing = Oceananigans.OutputReaders.Clamp())
 
 T_restoring = DW.DatasetRestoring(restoring_meta(:temperature), arch; restoring_kw...)
 S_restoring = DW.DatasetRestoring(restoring_meta(:salinity),    arch; restoring_kw...)
@@ -204,6 +248,12 @@ v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 @inline u_east_exterior(j, k, grid, clock, fields) =
     DW.interpolate_to_grid(u_fts, grid.Nx, j, k, u_native, grid, Time(clock.time))
 
+# Tangential (along-boundary) velocity. Absent until now: the boundary-normal component was
+# prescribed and v left to a default no-flux wall, which is wrong for an open edge and measurably
+# so -- in an idealised truncation test adding it was worth +32-39% of retained enstrophy.
+@inline v_east_tangential(j, k, grid, clock, fields) =
+    DW.interpolate_to_grid(v_fts, grid.Nx, j, k, v_native, grid, Time(clock.time))
+
 @inline T_east_exterior(j, k, grid, clock, fields) =
     DW.interpolate_to_grid(T_fts, grid.Nx, j, k, T_native, grid, Time(clock.time))
 @inline S_east_exterior(j, k, grid, clock, fields) =
@@ -215,7 +265,14 @@ v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 zos_meta = DW.Metadata(:free_surface; dataset = glorys, dates = boundary_dates, region = glorys_region)
 zos_fts  = FieldTimeSeries(zos_meta, arch;
                            time_indices_in_memory = n_times,
-                           time_indexing = Oceananigans.OutputReaders.Cyclical(),
+                           # Clamp, NOT Cyclical. NumericalEarth 0.8 stamps GLORYSDaily at the CENTRE of
+                           # its daily-mean window (12:00), so the first sample lands 12 h AFTER the run
+                           # starts. Cyclical() fills that gap by wrapping to the FAR END of the record --
+                           # the last day of the series forcing the first half-day of the run. Clamp holds
+                           # the first sample instead, i.e. persistence, which is what the hand-rolled
+                           # kernels in benchmarking/canary_template.jl already do. A lead-in day is not an
+                           # option: GLORYS itself begins 1993-01-01, the usual run_start.
+                           time_indexing = Oceananigans.OutputReaders.Clamp(),
                            inpainting = bc_inpainting)
 zos_native = zos_fts.grid
 @inline zos_at(i, j, grid, t) = DW.interpolate_to_grid(zos_fts, i, j, 1, zos_native, grid, t)
@@ -235,12 +292,13 @@ zos_native = zos_fts.grid
 end
 
 u_bcs = FieldBoundaryConditions(east = NormalFlowBoundaryCondition(u_east_exterior; scheme = radiation, discrete_form = true))
+v_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(v_east_tangential; scheme = radiation, discrete_form = true))
 U_bcs = FieldBoundaryConditions(east = GravityWaveRadiationBoundaryCondition(east_U_obc; discrete_form = true))
 # The Chapman condition radiates interior η outward and never reads an exterior value -- see the
 # recipe. Present for the barotropic mode to be well posed, not to impose anything.
 η_bcs = FieldBoundaryConditions(grid, (Center(), Center(), Face()); east = SurfaceWaveRadiationBoundaryCondition())
-T_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(T_east_exterior; scheme = radiation, discrete_form = true))
-S_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(S_east_exterior; scheme = radiation, discrete_form = true))
+T_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(T_east_exterior; scheme = ts_scheme, discrete_form = true))
+S_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(S_east_exterior; scheme = ts_scheme, discrete_form = true))
 
 # --- Ocean simulation --------------------------------------------------------
 weno_order = parse(Int, get(ENV, "REDSEA_WENO_ORDER", "7"))
@@ -252,7 +310,7 @@ ocean = ocean_simulation(grid;
                          tracer_advection,
                          forcing = (T = T_restoring, S = S_restoring,
                                     u = u_restoring, v = v_restoring),
-                         boundary_conditions = (; u = u_bcs, U = U_bcs, η = η_bcs, T = T_bcs, S = S_bcs))
+                         boundary_conditions = (; u = u_bcs, v = v_bcs, U = U_bcs, η = η_bcs, T = T_bcs, S = S_bcs))
 
 # --- Atmospheric forcing -----------------------------------------------------
 # API note: this differs from older ClimaOcean/NumericalEarth examples. In 0.6.1 radiation is a
@@ -619,18 +677,24 @@ tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_zstar ? "_zstar" : ""
       get(ENV, "REDSEA_TAG", "")
 out(name) = joinpath(@__DIR__, "redsea_glorys_$(name)$(tag)")
 
+# Oceananigans renamed this writer keyword in 0.113 (overwrite_existing -> overwrite_files), for
+# Checkpointer as well as JLD2Writer. Picking it from the method's own kwarg list keeps ONE code path
+# across both versions; splat it into every writer below rather than naming the keyword directly.
+const OVERWRITE = (:overwrite_files in Base.kwarg_decl(which(JLD2Writer, Tuple{Any, Any}))) ?
+                  (; overwrite_files = true) : (; overwrite_existing = true)
+
 simulation.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, :, Nz), filename = out("surface"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, :, Nz), filename = out("surface"))
 simulation.output_writers[:east_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (Nx, :, :), filename = out("east_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (Nx, :, :), filename = out("east_section"))
 simulation.output_writers[:strait_section] = JLD2Writer(ocean.model, output_fields;
-    schedule = output_schedule, overwrite_existing = true, indices = (:, j_strait, :), filename = out("strait_section"))
+    schedule = output_schedule, OVERWRITE..., indices = (:, j_strait, :), filename = out("strait_section"))
 simulation.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
-    schedule = output_schedule, overwrite_existing = true, filename = out("free_surface"))
+    schedule = output_schedule, OVERWRITE..., filename = out("free_surface"))
 
 # A 28 h run should survive a crash. cleanup keeps only the most recent checkpoint (~300 MB).
 simulation.output_writers[:checkpointer] = Checkpointer(ocean.model;
     schedule = TimeInterval(12hours), dir = @__DIR__, prefix = "redsea_checkpoint$(tag)",
-    overwrite_existing = true, cleanup = true)
+    OVERWRITE..., cleanup = true)
 
 run!(simulation)

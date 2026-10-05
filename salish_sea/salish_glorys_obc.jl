@@ -203,8 +203,17 @@ end
 # time_indices_in_memory = all: the default of 2 reloads slices from the cached inpainted files as
 # the clock advances, which would silently undo the repair below. The whole series is ~25 MB.
 n_times = length(boundary_dates)
+# time_indexing: DatasetRestoring defaults to Cyclical(), and these series are not only the interior
+# sponge -- their field_time_series is what the open-boundary exterior values are sampled from. Under
+# NumericalEarth 0.8 GLORYSDaily is stamped at the CENTRE of its daily-mean window (12:00), so the
+# first sample lands 12 h AFTER the run starts, and Cyclical fills that gap by wrapping to the FAR END
+# of the record: the last day of the series would drive the first half-day of the run, at both the
+# boundary and the sponge. Clamp holds the first sample instead (persistence), matching what the
+# hand-rolled kernels in benchmarking/canary_template.jl do. A lead-in day is not available: GLORYS
+# itself begins 1993-01-01, which is run_start.
 restoring_kw = (; rate = restoring_rate, mask = boundary_mask, inpainting = bc_inpainting,
-                  time_indices_in_memory = n_times)
+                  time_indices_in_memory = n_times,
+                  time_indexing = Oceananigans.OutputReaders.Clamp())
 
 T_restoring = DW.DatasetRestoring(restoring_meta(:temperature), arch; restoring_kw...)
 S_restoring = DW.DatasetRestoring(restoring_meta(:salinity),    arch; restoring_kw...)
@@ -310,7 +319,14 @@ v_bcs = FieldBoundaryConditions(north = NormalFlowBoundaryCondition(v_north_exte
 zos_meta = DW.Metadata(:free_surface; dataset = glorys, dates = boundary_dates, region = glorys_region)
 zos_fts  = FieldTimeSeries(zos_meta, arch;
                            time_indices_in_memory = length(boundary_dates),
-                           time_indexing = Oceananigans.OutputReaders.Cyclical(),
+                           # Clamp, NOT Cyclical. NumericalEarth 0.8 stamps GLORYSDaily at the CENTRE of
+                           # its daily-mean window (12:00), so the first sample lands 12 h AFTER the run
+                           # starts. Cyclical() fills that gap by wrapping to the FAR END of the record --
+                           # the last day of the series forcing the first half-day of the run. Clamp holds
+                           # the first sample instead, i.e. persistence, which is what the hand-rolled
+                           # kernels in benchmarking/canary_template.jl already do. A lead-in day is not an
+                           # option: GLORYS itself begins 1993-01-01, the usual run_start.
+                           time_indexing = Oceananigans.OutputReaders.Clamp(),
                            inpainting = bc_inpainting)
 zos_native = zos_fts.grid
 
@@ -740,11 +756,17 @@ output_schedule = TimeInterval(3hours)
 run_tag = (weno_order == 7 ? "" : "_weno$(weno_order)") * (use_partial_cells ? "_pcb" : "") *
           (use_zstar ? "_zstar" : "")
 
+# Oceananigans renamed this writer keyword in 0.113 (overwrite_existing -> overwrite_files), for
+# Checkpointer as well as JLD2Writer. Picking it from the method's own kwarg list keeps ONE code path
+# across both versions; splat it into every writer below rather than naming the keyword directly.
+const OVERWRITE = (:overwrite_files in Base.kwarg_decl(which(JLD2Writer, Tuple{Any, Any}))) ?
+                  (; overwrite_files = true) : (; overwrite_existing = true)
+
 # Surface slice, as before. NOTE: this alone hid the blow-up on the last two runs -- the excursion
 # is subsurface, and the surface stayed flat for the whole hour. Keep it, but do not judge from it.
 ocean.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
                                             schedule = output_schedule,
-                                            overwrite_existing = true,
+                                            OVERWRITE...,
                                             indices = (:, :, Nz),
                                             filename = "salishsea_glorys_openboundaries_test1$(run_tag)")
 
@@ -754,13 +776,13 @@ ocean.output_writers[:surface] = JLD2Writer(ocean.model, output_fields;
 # (Georgia Strait) is where the salinity overshoot and the w spike are born.
 ocean.output_writers[:west_section] = JLD2Writer(ocean.model, output_fields;
                                                  schedule = output_schedule,
-                                                 overwrite_existing = true,
+                                                 OVERWRITE...,
                                                  indices = (1, :, :),
                                                  filename = "salishsea_glorys_west_section$(run_tag)")
 
 ocean.output_writers[:north_section] = JLD2Writer(ocean.model, output_fields;
                                                   schedule = output_schedule,
-                                                  overwrite_existing = true,
+                                                  OVERWRITE...,
                                                   indices = (:, Ny, :),
                                                   filename = "salishsea_glorys_north_section$(run_tag)")
 
@@ -770,7 +792,7 @@ k_mid = argmin(abs.(z_centers .+ 150))
 @info @sprintf("Subsurface output slice at k = %d, z = %.1f m", k_mid, z_centers[k_mid])
 ocean.output_writers[:subsurface] = JLD2Writer(ocean.model, output_fields;
                                                schedule = output_schedule,
-                                               overwrite_existing = true,
+                                               OVERWRITE...,
                                                indices = (:, :, k_mid),
                                                filename = "salishsea_glorys_subsurface$(run_tag)")
 
@@ -779,7 +801,7 @@ ocean.output_writers[:subsurface] = JLD2Writer(ocean.model, output_fields;
 # so watching η grow (and where) is the direct test of that mismatch.
 ocean.output_writers[:free_surface] = JLD2Writer(ocean.model, (; η = free_surface_field(ocean.model.free_surface));
                                                  schedule = output_schedule,
-                                                 overwrite_existing = true,
+                                                 OVERWRITE...,
                                                  filename = "salishsea_glorys_free_surface$(run_tag)")
 
 run!(ocean)   # bounded 1-hour test; for production keep this and use the PRODUCTION values above
