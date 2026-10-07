@@ -219,6 +219,34 @@ the missing surface forcing remains the explanation.
 1.5–2.5 d is **+1.334** (wrong sign for an inverse estuary) against **−1.004** over t ≥ 6 d. Judging
 this configuration's strait from a 2-day run would give the opposite answer.
 
+## Migration to Oceananigans 0.113 — baseline reproduces
+
+A 2-day arm at 0.05°, unforced, with **every scheme knob at its default**, so the only changes from
+the validated run are the version move (Oceananigans 0.110.17 → 0.113, NumericalEarth 0.6.1 → 0.8)
+and the `Clamp` time-indexing fix (recipe trap 8). 920 iterations, 7.57 h — the same iteration count
+as the validated run, at 29–31 s/iter against its 36.1.
+
+Means over t ≥ 0.5 d, both logs measured the same way:
+
+| diagnostic | 0.110.17 / NE 0.6.1 | 0.113 / NE 0.8 | Δ | significance |
+|---|---|---|---|---|
+| strait net (Bab el-Mandeb) | −2.8378e5 | −2.9035e5 | −2.3% | 0.70σ |
+| volume drift | −4.3814e-5 | −4.6085e-5 | −5.2% | 0.64σ |
+| max\|u\| | 0.6621 | 0.6755 | +2.0% | 1.46σ |
+| max\|η\| | 0.3904 | 0.3926 | +0.6% | 0.78σ |
+
+Nothing resolved. The initial condition is identical to the printed precision in every field except
+`max|w|` (8.95e-2 against 8.96e-2) — `u` and `v` are exactly zero at t = 0, so `w` is the one field
+there that is diagnosed from the boundary inflow, and therefore the only one a 12-hour shift in
+parent phase can move.
+
+**Read the correction table above with its error bar.** These diagnostics fluctuate: the strait net
+has a standard error of ~6.6e3 m³/s on 43 samples, i.e. 2.3% of its mean. The `−0.6%` between the
+buggy and fixed columns there is well inside that, so it never measured anything — the conclusion it
+supports (removal changes nothing) is right, but it rests on the bracketing argument, not on that
+number. A 2-day arm resolves a change in the strait net of roughly 7%; anything subtler needs a
+longer run, not a repeated one.
+
 ## Resolution and cost (CPU)
 
 | Δ | km at 20°N | columns | 7-day run |

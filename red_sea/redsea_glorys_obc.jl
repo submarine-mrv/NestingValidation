@@ -145,7 +145,13 @@ ts_scheme = ts_kind == "normal"    ? RAD_NORMAL :
             ts_kind == "reservoir" ? getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(
                                          inflow_length_scale = res_in, outflow_length_scale = res_out) :
             radiation
-@info "Open-boundary scheme: velocities $(radiation_kind), T/S $(ts_kind)" *
+# REDSEA_TANGENTIAL adds a boundary-condition for the ALONG-boundary velocity, which this domain has
+# never had: v was left to a default no-flux wall on an open edge. OFF by default, like every other
+# knob here, so the defaults still reproduce the validated runs exactly -- the +32-39% retained
+# enstrophy that justified it was measured in canary/, not in this domain, and a baseline arm is only
+# worth running if it changes one thing at a time.
+use_tangential = get(ENV, "REDSEA_TANGENTIAL", "0") == "1"
+@info "Open-boundary scheme: velocities $(radiation_kind), T/S $(ts_kind), tangential $(use_tangential ? "on" : "off")" *
       (ts_kind == "reservoir" ? @sprintf(" (reservoir in %.0f m, out %.0f m)", res_in, res_out) : "")
 
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) =
@@ -251,6 +257,7 @@ v_fts, v_native = v_restoring.field_time_series, v_restoring.native_grid
 # Tangential (along-boundary) velocity. Absent until now: the boundary-normal component was
 # prescribed and v left to a default no-flux wall, which is wrong for an open edge and measurably
 # so -- in an idealised truncation test adding it was worth +32-39% of retained enstrophy.
+# Switched by REDSEA_TANGENTIAL; see the scheme block above.
 @inline v_east_tangential(j, k, grid, clock, fields) =
     DW.interpolate_to_grid(v_fts, grid.Nx, j, k, v_native, grid, Time(clock.time))
 
@@ -292,7 +299,9 @@ zos_native = zos_fts.grid
 end
 
 u_bcs = FieldBoundaryConditions(east = NormalFlowBoundaryCondition(u_east_exterior; scheme = radiation, discrete_form = true))
-v_bcs = FieldBoundaryConditions(east = ValueBoundaryCondition(v_east_tangential; scheme = radiation, discrete_form = true))
+v_bcs = use_tangential ?
+    FieldBoundaryConditions(east = ValueBoundaryCondition(v_east_tangential; scheme = radiation, discrete_form = true)) :
+    nothing
 U_bcs = FieldBoundaryConditions(east = GravityWaveRadiationBoundaryCondition(east_U_obc; discrete_form = true))
 # The Chapman condition radiates interior η outward and never reads an exterior value -- see the
 # recipe. Present for the barotropic mode to be well posed, not to impose anything.
@@ -310,7 +319,8 @@ ocean = ocean_simulation(grid;
                          tracer_advection,
                          forcing = (T = T_restoring, S = S_restoring,
                                     u = u_restoring, v = v_restoring),
-                         boundary_conditions = (; u = u_bcs, v = v_bcs, U = U_bcs, η = η_bcs, T = T_bcs, S = S_bcs))
+                         boundary_conditions = merge((; u = u_bcs, U = U_bcs, η = η_bcs, T = T_bcs, S = S_bcs),
+                                                     isnothing(v_bcs) ? (;) : (; v = v_bcs)))
 
 # --- Atmospheric forcing -----------------------------------------------------
 # API note: this differs from older ClimaOcean/NumericalEarth examples. In 0.6.1 radiation is a
@@ -583,6 +593,11 @@ const wall_t0   = Ref(Base.time())
 const wall_last = Ref(Base.time())
 const sim_last  = Ref(0.0)
 
+# Divisor for the pacing line below. Must be the SAME value the callback is registered with, or
+# the reported s/iter is wrong by their ratio -- it read 2.17 s/iter at interval 50 when the truth
+# was 0.43, because the divisor was hardcoded to 10.
+const PROGRESS_ITERS = parse(Int, get(ENV, "REDSEA_PROGRESS_ITERS", "10"))
+
 function progress(sim)
     model = ocean_model_of(sim.model)
     u, v, w = model.velocities
@@ -648,11 +663,17 @@ function progress(sim)
     rate = Δwall > 0 ? Δsim / Δwall : 0.0
     eta  = (isfinite(sim.stop_time) && rate > 0) ? (sim.stop_time - time(sim)) / rate : NaN
     @info @sprintf("        pacing: wall %s | %.0f× realtime (recent) | %.2f s/iter | ETA %s",
-                   prettytime(wall), rate, Δwall / 10, isnan(eta) ? "n/a" : prettytime(eta))
+                   prettytime(wall), rate, Δwall / PROGRESS_ITERS, isnan(eta) ? "n/a" : prettytime(eta))
     flush(stderr)
     return nothing
 end
-add_callback!(simulation, progress, IterationInterval(10))
+# progress walks every wet cell on the host -- wet_extrema on T and S, two findmax, the east and
+# Bab el-Mandeb transports, and a conservation check that compares density pairs over all ~497k wet
+# cells. At IterationInterval(10) that dominates wall time: the cost per iteration stays ~32 s whether
+# Δt is 10 s or 15 min, which is the signature of a fixed per-call cost rather than of the dynamics.
+# Thinning it does not touch the solution -- the diagnostics are read-only and the output writers keep
+# their own schedule. Mirrors CANARY_PROGRESS_ITERS.
+add_callback!(simulation, progress, IterationInterval(PROGRESS_ITERS))
 
 # --- Spin-up then the run ----------------------------------------------------
 simulation.Δt = 10
