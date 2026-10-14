@@ -25,7 +25,13 @@ arch = CPU()
 
 # --- Run window -------------------------------------------------------------
 run_start   = DateTime(1993, 1, 1)
-run_days    = 7
+# run_days sizes the PARENT DATA window; REDSEA_STOP_DAYS sizes the simulation. They were decoupled,
+# so a 2-day arm still loaded 10 days of GLORYS and held all of it resident (trap 3 forbids a smaller
+# time_indices_in_memory here -- this script repairs the parent in memory with fill_down_fts!, and a
+# rolling window silently reloads unrepaired slices). That footprint is what the OS killed twice.
+# Shortening it is safe for comparison between arms: the daily samples covering t are the same files
+# either way, so boundary values for t <= run_days are identical to a longer window's.
+run_days    = parse(Int, get(ENV, "REDSEA_RUN_DAYS", "7"))
 margin_days = 2
 boundary_dates = run_start : Day(1) : (run_start + Day(run_days + margin_days))
 
