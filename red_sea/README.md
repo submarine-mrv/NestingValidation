@@ -247,6 +247,51 @@ supports (removal changes nothing) is right, but it rests on the bracketing argu
 number. A 2-day arm resolves a change in the strait net of roughly 7%; anything subtler needs a
 longer run, not a repeated one.
 
+## Open-boundary scheme arms — the MAB configuration transfers
+
+Three 2-day arms at 0.05°, unforced, on `redsea-cpu` (n2-standard-4). Each changes one thing
+from the one before it; all four published diagnostics plus east-boundary ΔS, means over
+t ≥ 0.5 d, significance against the combined standard error.
+
+| arm | flags | east bnd ΔS | vs baseline |
+|---|---|---|---|
+| baseline | all defaults | 0.07502 | — |
+| reservoir | `REDSEA_TS_SCHEME=reservoir REDSEA_RESERVOIR_IN=5000` | 0.07265 | −3.2% (1.43σ) |
+| all three | + `REDSEA_TANGENTIAL=1 REDSEA_RADIATION=oblique` | 0.05060 | **−32.5% (11.62σ)** |
+
+East-boundary ΔS is the salinity difference between inflow and outflow at the 50°E face, so a
+lower value means the water entering and leaving match more closely — the open boundary is
+doing less spurious water-mass work. It is the only diagnostic that moved: strait net (0.09σ),
+volume drift (0.08σ), max|u| (0.00σ) and max|η| (0.20σ) are all within noise, as expected —
+Bab el-Mandeb is ~730 km inside the domain and two days is far too short for a boundary signal
+to reach it.
+
+**Roughly ten times the effect comes from the tangential BC and oblique radiation, not the
+reservoir.** Walking the ladder in isolation would have spent an arm on the weakest component
+first and still not revealed that; the combined arm did. The split between tangential and
+oblique is not resolved here — one tangential-only arm would settle it, since the reservoir's
+contribution is bounded at ~3%.
+
+### Oblique radiation does NOT fail on this land-terminated boundary
+
+Peak salinity was **42.111 psu in all three arms, identical**, against the 45.7 psu excursion
+that oblique produced at Canary's south boundary. The east boundary here is cut by the Yemeni
+and Somali coasts at both ends, so the land geometry that was blamed is present. What differs
+is refinement: **1.7× against a 1/12° parent here, 4.2× at Canary**. That is direct support
+for the hypothesis in `../docs/obc-implementation-recipe.md` that the failure tracks refinement
+rather than land. Salish, at 8.3×, is the decisive test.
+
+### Recommended production configuration
+
+    REDSEA_TANGENTIAL=1 REDSEA_RADIATION=oblique \
+    REDSEA_TS_SCHEME=reservoir REDSEA_RESERVOIR_IN=5000
+
+**The script defaults remain OFF** so the validated 7-day runs above still reproduce unchanged;
+the recommendation lives here rather than in the defaults. `REDSEA_RESERVOIR_IN=5000` is
+0.3 × the volume-weighted median boundary excursion measured from this domain's own east
+section (16.2 km, see `boundary_excursion.jl`), which coincidentally lands on the value Canary
+uses, so the two domains stay directly comparable.
+
 ## Resolution and cost (CPU)
 
 | Δ | km at 20°N | columns | 7-day run |
