@@ -121,7 +121,48 @@ using Oceananigans.BoundaryConditions: NormalRadiation,
 using Oceananigans.Operators: Δzᶠᶜᶜ, Δzᶜᶠᶜ, Axᶠᶜᶜ, Ayᶜᶠᶜ, Azᶜᶜᶜ
 using Oceananigans.ImmersedBoundaries: immersed_inactive_node, immersed_peripheral_node
 
-radiation = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+# Scheme selection, mirroring red_sea/. Defaults reproduce the validated run exactly:
+# NormalRadiation everywhere, no reservoir, no tangential BC.
+#
+# This domain is the EXTREME case for the refinement hypothesis in
+# docs/obc-implementation-recipe.md. Oblique radiation blew up at Canary (4.2x refinement vs the
+# 1/12 deg parent) but ran clean at Red Sea (1.7x), both on boundaries terminated by land --
+# evidence the failure tracks refinement rather than land. Salish runs 8.3x, and BOTH its open
+# boundaries are narrow channels walled on both sides, so if refinement is the driver this is
+# where it should fail hardest.
+const HAS_OBLIQUE   = isdefined(Oceananigans.BoundaryConditions, :ObliqueRadiation)
+const HAS_RESERVOIR = isdefined(Oceananigans.BoundaryConditions, :TracerReservoir)
+
+const RAD_NORMAL = NormalRadiation(inflow_timescale = 6hours, outflow_timescale = Inf)
+
+radiation_kind = get(ENV, "SALISH_RADIATION", "normal")
+radiation_kind in ("normal", "oblique") || error("SALISH_RADIATION must be \"normal\" or \"oblique\"")
+radiation_kind == "oblique" && !HAS_OBLIQUE &&
+    error("SALISH_RADIATION=oblique needs Oceananigans >= 0.113; this environment has no ObliqueRadiation")
+radiation = radiation_kind == "oblique" ?
+    getfield(Oceananigans.BoundaryConditions, :ObliqueRadiation)(inflow_timescale = 6hours, outflow_timescale = Inf) :
+    RAD_NORMAL
+
+# T/S carry their own scheme. Oblique is never offered here: oblique on TRACERS at a
+# land-terminated boundary is what drove salinity to 45.7 psu at Canary, and both boundaries
+# here are channels walled on both sides.
+const res_in  = parse(Float64, get(ENV, "SALISH_RESERVOIR_IN",  "0"))
+const res_out = parse(Float64, get(ENV, "SALISH_RESERVOIR_OUT", "0"))
+ts_kind = get(ENV, "SALISH_TS_SCHEME", "same")
+ts_kind in ("same", "normal", "reservoir") || error("SALISH_TS_SCHEME must be same/normal/reservoir")
+ts_kind == "reservoir" && !HAS_RESERVOIR &&
+    error("SALISH_TS_SCHEME=reservoir needs Oceananigans >= 0.113.2")
+ts_scheme = ts_kind == "normal"    ? RAD_NORMAL :
+            ts_kind == "reservoir" ? getfield(Oceananigans.BoundaryConditions, :TracerReservoir)(
+                                         inflow_length_scale = res_in, outflow_length_scale = res_out) :
+            radiation
+
+# SALISH_TANGENTIAL adds the ALONG-boundary velocity component, which this domain has never had:
+# v was left to a default no-flux wall at the west boundary and u at the north one. In a channel
+# the walls impose strong along-boundary structure, so this should matter more here than anywhere.
+use_tangential = get(ENV, "SALISH_TANGENTIAL", "0") == "1"
+@info "Open-boundary scheme: velocities $(radiation_kind), T/S $(ts_kind), tangential $(use_tangential ? "on" : "off")" *
+      (ts_kind == "reservoir" ? @sprintf(" (reservoir in %.0f m, out %.0f m)", res_in, res_out) : "")
 
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) = !immersed_peripheral_node(i, j, k, grid, ℓx, ℓy, ℓz) & !immersed_inactive_node(i, j, k, grid, ℓx, ℓy, ℓz)
 
@@ -246,10 +287,10 @@ S_glorys_fts, S_glorys_native = S_restoring.field_time_series, S_restoring.nativ
 @inline S_west_exterior(j, k, grid, clock, fields)  = DW.interpolate_to_grid(S_glorys_fts, 1,       j, k, S_glorys_native, grid, Time(clock.time))
 @inline S_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(S_glorys_fts, i, grid.Ny, k, S_glorys_native, grid, Time(clock.time))
 
-T_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(T_west_exterior;  scheme = radiation, discrete_form = true),
-                                north = ValueBoundaryCondition(T_north_exterior; scheme = radiation, discrete_form = true))
-S_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(S_west_exterior;  scheme = radiation, discrete_form = true),
-                                north = ValueBoundaryCondition(S_north_exterior; scheme = radiation, discrete_form = true))
+T_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(T_west_exterior;  scheme = ts_scheme, discrete_form = true),
+                                north = ValueBoundaryCondition(T_north_exterior; scheme = ts_scheme, discrete_form = true))
+S_bcs = FieldBoundaryConditions(west  = ValueBoundaryCondition(S_west_exterior;  scheme = ts_scheme, discrete_form = true),
+                                north = ValueBoundaryCondition(S_north_exterior; scheme = ts_scheme, discrete_form = true))
 
 # --- STEP B: GLORYS-driven velocity + barotropic-transport open boundaries ---
 # Stage A forced a steady 0.1 m/s inflow at BOTH open boundaries with no matching outflow -- a
@@ -297,8 +338,21 @@ const transport_correction = Ref(0.0)
 @inline u_west_exterior(j, k, grid, clock, fields)  = DW.interpolate_to_grid(u_glorys_fts, 1,       j, k, u_glorys_native, grid, Time(clock.time)) - transport_correction[]
 @inline v_north_exterior(i, k, grid, clock, fields) = DW.interpolate_to_grid(v_glorys_fts, i, grid.Ny, k, v_glorys_native, grid, Time(clock.time)) + transport_correction[]
 
-u_bcs = FieldBoundaryConditions(west  = NormalFlowBoundaryCondition(u_west_exterior;  scheme = radiation, discrete_form = true))
-v_bcs = FieldBoundaryConditions(north = NormalFlowBoundaryCondition(v_north_exterior; scheme = radiation, discrete_form = true))
+# Tangential (along-boundary) components: v along the WEST boundary, u along the NORTH one.
+# No transport correction on these -- that correction fixes the net volume flux THROUGH the
+# boundary, which is carried entirely by the normal component.
+@inline v_west_tangential(j, k, grid, clock, fields)  = DW.interpolate_to_grid(v_glorys_fts, 1,       j, k, v_glorys_native, grid, Time(clock.time))
+@inline u_north_tangential(i, k, grid, clock, fields) = DW.interpolate_to_grid(u_glorys_fts, i, grid.Ny, k, u_glorys_native, grid, Time(clock.time))
+
+nf(f) = NormalFlowBoundaryCondition(f; scheme = radiation, discrete_form = true)
+vb(f) = ValueBoundaryCondition(f; scheme = radiation, discrete_form = true)
+
+u_bcs = use_tangential ?
+    FieldBoundaryConditions(west = nf(u_west_exterior), north = vb(u_north_tangential)) :
+    FieldBoundaryConditions(west = nf(u_west_exterior))
+v_bcs = use_tangential ?
+    FieldBoundaryConditions(north = nf(v_north_exterior), west = vb(v_west_tangential)) :
+    FieldBoundaryConditions(north = nf(v_north_exterior))
 
 # GLORYS free surface (zos) as the Flather exterior η. This is the ONLY place an exterior η
 # enters the model -- see the note on the Chapman BC below, which despite appearances never
