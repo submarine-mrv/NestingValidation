@@ -2,6 +2,20 @@
 
 Machine-specific setup and traps. Verified 2026-08-21 on macOS 13.2.1 (Darwin 22.3.0, arm64).
 
+## JLD2 version skew: old Salish/Canary output needs the OLD project
+
+Oceananigans serialises boundary-condition types into its `.jld2` output, and those types moved
+between 0.110.17 and 0.113. The skew cuts BOTH ways:
+
+- Output written by **0.110.17** (`salish_sea/salishsea_glorys_*.jld2`, anything predating the 0.113
+  migration) must be read with `--project=.`. Reading it under `v113_staging` throws
+  `MethodError: no method matching constructrr(... Oceananigans.BoundaryConditions.Flux ...)`.
+- Output written by **0.113** must be read with `--project=v113_staging`; the 0.110 reader fails on
+  it in the same way.
+
+So an analysis script that compares a pre-migration run against a post-migration one cannot read
+both in a single session. Run it twice under the two projects and compare the extracted numbers.
+
 ## Julia
 
 **1.12 is required.** It is now the juliaup *default* channel, so any directory works:

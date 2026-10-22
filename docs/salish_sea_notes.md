@@ -93,6 +93,38 @@ cannot resolve 5–20 km channels with sills and smears Salish Sea freshwater ac
 GLORYS is a poor parent for a surface-salinity study; LiveOcean or SalishSeaCast output would be
 better. The model does add a further slow freshening of 0.26–0.79 psu over 7 days.
 
+**Measured, 2026-10-22 — how little parent information the boundaries actually carry.** Counted
+directly from the cached GLORYS field (`so`, 1993-01-01, region 235.25–238.25 / 46.75–50.00, which
+is 1/12° = 6.21 × 9.28 km here):
+
+| boundary | GLORYS cells spanning the section | **wet at surface** | model cells | deepest valid GLORYS |
+|---|---|---|---|---|
+| west (Juan de Fuca, λ = 235.5) | 21 | **9** | 176 | 186 m |
+| north (Str. of Georgia, φ = 49.05) | 31 | **7** | 250 | 266 m |
+
+So the west boundary is prescribed from **nine** independent parent values and the north from
+**seven**. Against the 81 model wet cells on the north section (above), that is ~12 model cells per
+parent cell. The shortfall is worse than the nominal 8.3:1 refinement ratio because GLORYS's coarse
+land mask closes most of each channel — only 9 of 21 cells are wet at the west, 7 of 31 at the
+north. The parent does not merely under-resolve these straits, it barely has them.
+
+This is the quantitative root of the surface-salinity bias above, and it bounds what any boundary
+scheme can achieve: a better condition changes how thin information is applied, not how much there
+is. It also says what moving the west boundary out to the open shelf past Cape Flattery would buy —
+GLORYS is fully wet and deep there, so information content rises by roughly an order of magnitude.
+Moving the NORTH boundary out does not help: the Strait of Georgia only narrows toward Johnstone
+Strait, so the alternative there is to extend far enough north to close it and accept losing the
+secondary Johnstone exchange.
+
+**Boundary excursion, for the reservoir length scale.** `boundary_excursion_west.jl` integrates the
+boundary-normal velocity in time per wet face cell and takes the peak-to-peak range, reporting the
+VOLUME-WEIGHTED median (a plain median is dominated by near-stagnant deep cells). From the validated
+7-day run's west section: plain median 19.5 km, **volume-weighted median 17.6 km**, 270 wet face
+cells. At the 0.3× factor used elsewhere that gives **5294 m**. Canary uses 5000 m and the Red Sea
+measured 4863 m, so three very different geometries — open-ocean upwelling, hypersaline strait
+exchange, glacial estuary — agree within 10%. The arms use 5000 m for all three so they stay
+directly comparable.
+
 **No tides.** Qin ≈ 5.0e4 m³/s against MacCready et al. (2021, doi:10.1029/2020JC016738) reporting
 ~1.4e5 m³/s at the system mouth, while ΔS = 3.41 against an observed ~1.5–2. Those are the same
 error: Knudsen requires Qin·Sin ≈ |Qout·Sout|, so a weak exchange must carry a large property
