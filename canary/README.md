@@ -4,7 +4,7 @@ Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA5
 0.02° (2 km), January (38.8 h) and July (36.3 h) — plus two 90-day GPU tracer runs, at φ_S = 25.0
 (13.6 h) and φ_S = 22.0 (1.29 days), which together answer the domain-sizing question: at 90 days
 the 25°N domain was already large enough. See `../docs/canary-domain-sizing.md`.**
-Model: `benchmarking/canary_template.jl`.
+Model: `canary/canary_glorys_obc.jl`.
 
 ## Why this domain
 
@@ -203,10 +203,8 @@ static (linear free surface) grid is not small. `use_zstar: ["false"]` falls bac
 
 ## Parameters
 
-There are no defaults to document: the model is a template and every value comes from
-`../benchmarking/config_canary.yaml`, which is the record of what a run was. The column below is
-what that config holds as committed (the 90-day `_ref90` reference run). See
-`../benchmarking/README.md` for rendering and launching.
+`canary_glorys_obc.jl` carries the 90-day reference configuration inline. The column below is what
+it holds as committed; the knobs listed are read from the environment.
 
 | parameter | reference value | |
 |---|---|---|

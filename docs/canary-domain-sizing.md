@@ -1,6 +1,6 @@
 # How far south must the Canary domain reach?
 
-Status as of 2026-09-25. Model: `benchmarking/canary_template.jl`. Analysis: `canary/virtual_boundary.jl`.
+Status as of 2026-09-25. Model: `canary/canary_glorys_obc.jl`. Analysis: `canary/virtual_boundary.jl`.
 
 The Canary configuration exists to answer a residence-time question: water released at a point on
 Gran Canaria (−15.38°E, 28.16°N) — a CDR-style continuous surface source — drifts southwest with the

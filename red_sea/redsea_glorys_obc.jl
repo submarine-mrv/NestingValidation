@@ -212,7 +212,7 @@ n_times = length(boundary_dates)
 # first sample lands 12 h AFTER the run starts, and Cyclical fills that gap by wrapping to the FAR END
 # of the record: the last day of the series would drive the first half-day of the run, at both the
 # boundary and the sponge. Clamp holds the first sample instead (persistence), matching what the
-# hand-rolled kernels in benchmarking/canary_template.jl do. A lead-in day is not available: GLORYS
+# hand-rolled kernels in canary/canary_glorys_obc.jl do. A lead-in day is not available: GLORYS
 # itself begins 1993-01-01, which is run_start.
 restoring_kw = (; rate = restoring_rate, mask = boundary_mask, inpainting = bc_inpainting,
                   time_indices_in_memory = n_times,
@@ -283,7 +283,7 @@ zos_fts  = FieldTimeSeries(zos_meta, arch;
                            # starts. Cyclical() fills that gap by wrapping to the FAR END of the record --
                            # the last day of the series forcing the first half-day of the run. Clamp holds
                            # the first sample instead, i.e. persistence, which is what the hand-rolled
-                           # kernels in benchmarking/canary_template.jl already do. A lead-in day is not an
+                           # kernels in canary/canary_glorys_obc.jl already do. A lead-in day is not an
                            # option: GLORYS itself begins 1993-01-01, the usual run_start.
                            time_indexing = Oceananigans.OutputReaders.Clamp(),
                            inpainting = bc_inpainting)

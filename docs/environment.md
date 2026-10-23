@@ -114,7 +114,7 @@ byte-verified snapshot to
 Restore with `gcloud storage rsync -r gs://<forcing-bucket>/ecco4monthly-cache/ <that path>`.
 
 **Check before assuming a cache is redundant with GCS.** The buckets did already hold ECCO --
-`gs://ecco4monthly/data/` and `gs://<forcing-bucket>/ecco4monthly/` both carry
+`gs://<forcing-bucket>/data/` and `gs://<forcing-bucket>/ecco4monthly/` both carry
 `SALT_1993_01.nc` under exactly the local names -- but they stop at **1993**. All 24 of the 2017
 files, 32 of 56 `v4/` files, and `v4_darwin/` existed nowhere else, so deleting on the strength of
 "it's on GCP" would have lost roughly 9.7 of the 12 GB. The snapshot above closes that gap.
