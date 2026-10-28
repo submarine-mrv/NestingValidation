@@ -287,10 +287,13 @@ rather than land. Salish, at 8.3×, is the decisive test.
     REDSEA_TS_SCHEME=reservoir REDSEA_RESERVOIR_IN=5000
 
 **The script defaults remain OFF** so the validated 7-day runs above still reproduce unchanged;
-the recommendation lives here rather than in the defaults. `REDSEA_RESERVOIR_IN=5000` is
-0.3 × the volume-weighted median boundary excursion measured from this domain's own east
-section (16.2 km, see `boundary_excursion.jl`), which coincidentally lands on the value Canary
-uses, so the two domains stay directly comparable.
+the recommendation lives here rather than in the defaults. `REDSEA_RESERVOIR_IN=5000` matches the
+value Canary uses, so the two domains stay directly comparable — but it is **not derived**. The
+"0.3 × volume-weighted median excursion" once given here was back-derived to describe Canary's
+5000 m, not a principle. Against this domain's measured east
+section excursion (16.2 km, `boundary_excursion.jl`) a 5 km reservoir retains only ~4% of inflow
+memory over one excursion, which is the likeliest reason the reservoir-only arm moved ΔS by just
+−3.2% while the combined arm moved it −32.5%. The solution's sensitivity to the choice is unmeasured.
 
 ## Resolution and cost (CPU)
 

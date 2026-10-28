@@ -49,4 +49,12 @@ end
 @printf("wet face cells: %d\n", length(exc))
 @printf("excursion  plain median %.0f m | VOLUME-WEIGHTED median %.0f m | mean %.0f m | p90 %.0f m\n",
         median(exc), wmedian(exc, wgt), mean(exc), quantile(exc, 0.9))
-@printf("-> reservoir scale at 0.3x volume-weighted median: %.0f m\n", 0.3 * wmedian(exc, wgt))
+# TracerReservoir relaxes as exp(-E/L) over an excursion E, so L sets how much inflow memory
+# survives one excursion. No factor relates E to L -- report the trade-off and let the
+# configuration choose. The "0.3x" once printed here was back-derived to describe Canary's
+# 5000 m, not a result. Cross-domain spread: ../parent_excursion_survey.jl.
+E = wmedian(exc, wgt)
+for L in (5e3, 10e3, 20e3, 40e3, 60e3)
+    @printf("   L = %5.1f km -> retains %4.1f%% of inflow memory over E = %.1f km\n",
+            L/1e3, 100exp(-E/L), E/1e3)
+end
