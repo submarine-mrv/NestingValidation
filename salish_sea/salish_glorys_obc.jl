@@ -55,7 +55,7 @@ z_reference = ExponentialDiscretization(Nz, -depth, 0; scale = z_scale)
 # does not fail when η is large -- the cost is an O(max|η| / Δz_top) error in surface tracer
 # concentration and in the depth over which surface fluxes are spread. At Δz_top = 2.3 m with η of
 # 0.2-0.5 m that ratio is 0.09-0.22, which is why static z is fine here. Tides (3-5 m) or a thinner
-# surface cell would change that. See docs/salish_sea_notes.md. Off by default until validated
+# surface cell would change that. See salish_sea/README.md. Off by default until validated
 # against the stable static-z baseline.
 #   SALISH_ZSTAR=1 julia --project=. salish_glorys_obc.jl
 use_zstar = get(ENV, "SALISH_ZSTAR", "0") == "1"

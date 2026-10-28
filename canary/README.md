@@ -3,7 +3,7 @@
 Third OBC test domain. **Status: validated in both seasons — stable 7-day JRA55-forced runs at
 0.02° (2 km), January (38.8 h) and July (36.3 h) — plus two 90-day GPU tracer runs, at φ_S = 25.0
 (13.6 h) and φ_S = 22.0 (1.29 days), which together answer the domain-sizing question: at 90 days
-the 25°N domain was already large enough. See `../docs/canary-domain-sizing.md`.**
+the 25°N domain was already large enough. See `domain-sizing.md`.**
 Model: `canary/canary_glorys_obc.jl`.
 
 ## Why this domain
@@ -426,7 +426,7 @@ magnitudes ≤ 1e-25 /s, i.e. round-off on a tracer that has not reached any bou
 configuration matches identically too. **0.08 s/iter on GPU against 1.13 s/iter on CPU** at 0.1°.
 
 Getting there needed four changes, recorded because each fails in a way that is not obviously
-diagnosable (see also `docs/environment.md`):
+diagnosable (see also `../ENVIRONMENT.md`):
 
 1. **Boundary exteriors precomputed** — below.
 2. **`using CUDA` must execute**, and kernel-read globals must be `const` — below.
@@ -509,14 +509,14 @@ test. Not yet established:
 - ~~The tracer release has not been run in production.~~ **Done** — 90 days at 0.02° on GPU, 13.6 h
   wall, **88.8% of the release still in the domain at day 90**, ~81% of the loss through the south
   boundary. Residence timescales and the domain-size implications are in
-  `../docs/canary-domain-sizing.md`.
+  `domain-sizing.md`.
 - ~~A domain-sizing run has not happened.~~ **Done** — 90 days at `lat_south: [22.0]`, 1.29 days on
   an L4, identical to the 25°N run but for the southern boundary. Retention saturates: going from
   352 km to 574 km of southward distance buys **0.44 percentage points** (90.90% → 91.34% at day 90),
   so **the 25°N domain was already large enough at 90 days**. The virtual-boundary method that said
   so predicted the real domain to within ~4 points, and its extrapolated thresholds to 7–16% in
   distance. It also under-estimates rather than over-estimates retention, the opposite of what was
-  assumed. See `../docs/canary-domain-sizing.md`.
+  assumed. See `domain-sizing.md`.
 - ~~The diagnostics are not GPU-ready.~~ **Done** — see *Running on GPU*. The full configuration runs on
   an L4 and matches CPU at 0.1°, and runs at 0.02° (**1.8 s/iter, 2.95 GB of the L4's 24 GB**).
 - **GPU/CPU equivalence was checked at 0.1°, not at 0.02°** — a CPU run at the finer grid costs ~39 h.

@@ -10,14 +10,21 @@ parent product.
   (Red Sea) and three (Canary), with the pattern and its traps in `examples/README.md`.
 - `canary/` — Canary upwelling, NW Africa. Three open boundaries, wind-driven interior, islands
   inside the domain. Validated in both seasons at 2 km (January 38.8 h, July 36.3 h). Runs on GCP GPU
-  and matches CPU (see `canary/README.md` and `docs/environment.md`); 0.02° not yet run on GPU.
+  and matches CPU (see `canary/README.md` and `ENVIRONMENT.md`); 0.02° not yet run on GPU.
 
 ## Working agreements
 
-- **Write notes and findings to this repo, never to Claude's memory store.** Durable notes belong
-  in `docs/`; instructions that should persist across sessions belong in this file.
-- **Keep code comments lean.** Annotate the non-obvious decision in 1-3 lines and stop; investigation
-  history goes in `docs/`, not in source. Delete comments a change has falsified.
+- **Write notes and findings to this repo, never to Claude's memory store.** Instructions that
+  should persist across sessions belong in this file.
+- **`docs/` is the external user guide only.** It is read by people who did not run these
+  experiments, so it holds portable, durable guidance and nothing else. Do **not** add
+  investigation notes, measurement studies, or machine-specific traps to it.
+- **Findings go where they can't drift from the code that made them.** A measurement belongs in
+  the header of the script that produces it; the reasoning behind it belongs in the commit message
+  that lands it; a correction to a wrong claim belongs at the point of the claim. Domain-specific
+  notes belong in that domain's `README.md`, operational traps in `ENVIRONMENT.md`.
+- **Keep code comments lean.** Annotate the non-obvious decision in 1-3 lines and stop; keep
+  investigation history out of source. Delete comments a change has falsified.
 
 ## Environment
 
@@ -28,18 +35,24 @@ parent product.
   No git pin — do not reinstate a `[sources]` entry for Oceananigans.
 - A transient `signal 11` segfault on the first `using NumericalEarth` just needs a retry.
 - `CopernicusMarine.jl`'s bundled binary does not run on this macOS (13.2); a pip-venv shim is
-  installed at the package's scratch path — see `docs/environment.md`, which also covers the data
+  installed at the package's scratch path — see `ENVIRONMENT.md`, which also covers the data
   caches, the GLORYS download gotchas, and run cost.
 
 ## Docs
 
+The user guide, for external readers:
+
 - `docs/obc-implementation-recipe.md` — portable recipe for parent-driven open boundaries: the BC
   wiring that works, the traps, the net-transport correction, the diagnostics worth having, and a
   cross-check against the Mid-Atlantic Bight configuration in NumericalEarthSandbox.
-- `docs/salish_sea_notes.md` — this configuration: settings, validation, the instability root cause,
+
+Everything else is internal and lives next to what it describes:
+
+- `ENVIRONMENT.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, output buffering,
+  GCP GPU runs, run cost.
+- `salish_sea/README.md` — that configuration: settings, validation, the instability root cause,
   why the domain boundaries sit where they do, and known limitations.
-- `docs/environment.md` — Julia/juliaup, the CopernicusMarine macOS shim, caches, run cost.
-- `docs/canary-domain-sizing.md` — how far south the Canary domain must reach: the virtual-boundary
+- `canary/domain-sizing.md` — how far south the Canary domain must reach: the virtual-boundary
   method, retention over 73-268 km, the tau(L) fit, and why extending south past 22.8N is wasted
   unless the west boundary moves too.
 - `red_sea/README.md` — that domain’s verified geometry, the GLORYS depth checks (boundary *and*

@@ -1,7 +1,7 @@
 # Salish Sea / Juan de Fuca configuration — notes
 
 Status as of 2026-08-21. Model: `salish_sea/salish_glorys_obc.jl`.
-For the portable boundary-condition recipe see `obc-implementation-recipe.md`.
+For the portable boundary-condition recipe see `../docs/obc-implementation-recipe.md`.
 
 The purpose of this configuration was to **test the open-boundary implementation**, not to produce a
 production Salish Sea hindcast. GLORYS was chosen deliberately as a simple parent product; LiveOcean

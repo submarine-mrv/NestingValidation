@@ -315,7 +315,7 @@ boundary; only 0.7% of columns exceed 2500 m, so those levels are cheap to leave
 salinity is 34.776–34.802 over 2871–3226 m — homogeneous).
 
 **z\* is on by default**, because of the 0.94 m surface cell rather than tides. See the
-vertical-coordinate section of `../docs/salish_sea_notes.md`: a static grid is a *linear* free
+vertical-coordinate section of `../salish_sea/README.md`: a static grid is a *linear* free
 surface that never fails but carries an O(max|η| / Δz_top) error, and here that ratio is O(1).
 Evaporation being this basin's driver sharpens it — a freshwater flux over a fixed-volume thin cell
 cannot concentrate salt in a thinning layer. `REDSEA_ZSTAR=0` falls back to static z, in which case

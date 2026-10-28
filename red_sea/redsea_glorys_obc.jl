@@ -1,7 +1,7 @@
 # redsea_glorys_obc.jl
 # GLORYS-driven open boundary for the Red Sea + Gulf of Aden.
 # Adapted from salish_sea/salish_glorys_obc.jl; see docs/obc-implementation-recipe.md for the
-# reusable pattern and docs/salish_sea_notes.md for why each piece is here.
+# reusable pattern and salish_sea/README.md for why each piece is here.
 #
 # The point of this domain: ONE open boundary, in deep open ocean the parent resolves well, with
 # Bab el-Mandeb (~36 km, ~4 GLORYS cells) INSIDE the domain so the model resolves the strait its

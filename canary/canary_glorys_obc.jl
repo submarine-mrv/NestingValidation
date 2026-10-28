@@ -104,7 +104,7 @@ boundary_dates = run_start : Day(1) : (run_start + Day(run_days + margin_days))
 const λ₁, λ₂ = (Float64(-21.5), Float64(-10.0))
 # lat_south extends the domain south for the domain-sizing experiments. At 22.0 the release sits
 # 685 km from the south edge but only 600 km from the WEST edge, so west becomes the nearest open
-# boundary and the dominant tracer leak -- see docs/canary-domain-sizing.md.
+# boundary and the dominant tracer leak -- see canary/domain-sizing.md.
 const φ₁, φ₂ = (Float64(25.0), Float64(29.5))
 
 # 0.02 deg = 2.06 km at 27.25N, 575 x 225 x 32 = 4.1M cells, i.e. about the Red Sea's cost per step.
@@ -626,7 +626,7 @@ const RELEASE_RATE = release_volume > 0 ? 1 / release_volume : 0.0   # ∫S dV =
 # leaves and returns is destroyed. That is the same mechanism this domain's own data implicated: the
 # 22N run retained MORE north of every shared latitude than the 25N run's virtual boundaries
 # predicted, because the real boundary at 25.0 flushed tracer that would otherwise have come back
-# (docs/canary-domain-sizing.md). Upstream measures ~7-8% lost per oscillation at zero net
+# (canary/domain-sizing.md). Upstream measures ~7-8% lost per oscillation at zero net
 # displacement. Both scales 0, the default, reproduces the memoryless condition exactly.
 # The release tracers carry their own reservoir scales, set independently of the T/S ones. Splitting
 # them is what lets a reservoir on/off experiment vary ONE thing: T and S stay on the reservoir in
@@ -662,7 +662,7 @@ weno_scheme = WENO(order = weno_order; weno_kw...)
 # tracer_bounds gives the release tracers bound-preserving WENO, to fix the c < 0 undershoot
 # in the dilute plume edge (6.8% of surface cells at day 90) that makes the pointwise age ac/c
 # meaningless there. Kept OFF: in Oceananigans 0.110.17 that path is NON-CONSERVATIVE under z*,
-# creating tracer at +25%/day against +0.07% for plain WENO -- see docs/canary-domain-sizing.md.
+# creating tracer at +25%/day against +0.07% for plain WENO -- see canary/domain-sizing.md.
 # T and S must stay unbounded: 0 is not a physical floor for either.
 # NOTE: a NamedTuple here defaults any UNNAMED tracer to CenteredSecondOrder, so every tracer in
 # `tracer_names` must appear below.

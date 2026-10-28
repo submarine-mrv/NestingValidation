@@ -32,6 +32,25 @@ unhelpful `UndefVarError: StaticData` inside `PrecompileTools`. If you ever see 
 A transient `signal 11` segfault on the first `using NumericalEarth` after a while (often after a
 machine restart, mid-precompile) just needs a retry — nothing is corrupted.
 
+## A redirected Julia run can show NOTHING until it exits
+
+`julia ... > log 2>&1` gives stderr a block buffer (~8 KB), so a short run's *entire* output
+appears only at exit. This is worse than a delay: a 2-day run whose progress callback fires every
+25 iterations emits ~8-16 lines, 1-2 KB total, and can never fill the buffer. An 86-minute run with
+a 0-byte log was healthy and already deep in the time loop.
+
+- `global_logger(ConsoleLogger(stderr))` does **not** fix it. That routes the logger; it does not
+  change stream buffering.
+- `kill -INFO <pid>` (SIGINFO, 29 on macOS) prints task backtraces and is the way to see *where* a
+  silent run is — it names the current kernel, so it distinguishes setup from timestepping. Its
+  default action is discard, so it is safe even if unhandled; prefer it to SIGUSR1, whose default
+  action is **terminate**.
+- But SIGINFO does not flush the buffer. It writes straight to the fd, so the backtrace appears
+  *ahead* of earlier progress text that is still buffered. Do not read the resulting file order as
+  chronological.
+- To get live output, give the process a pty: `script -q /dev/null julia ...`. Otherwise add an
+  explicit `flush(stderr)` to the progress callback.
+
 ## CopernicusMarine: the macOS shim
 
 **Problem.** `CopernicusMarine.jl` ships a PyInstaller binary of the `copernicusmarine` CLI that
@@ -163,7 +182,8 @@ differs only by noise (compile time dominates); on JRA55 window reloads a plain 
   times out and the kernel logs nothing. Diagnose with Cloud Monitoring (CPU flat, disk reads in the
   hundreds of thousands per minute), reset the VM, and run with a watchdog that kills Julia below 2 GB
   free. `kill -USR1 <julia pid>` prints a stack profile, which is how the compile blowup was located.
-- **Julia's stderr is block-buffered when redirected**, so a log can stay empty for many minutes.
+- **Julia's stderr is block-buffered when redirected** - see the section above; a log can stay
+  empty for the whole run, not just a few minutes.
 - **An illegal CUDA address is reported at the next synchronisation, not where it happens.**
   `CUDA_LAUNCH_BLOCKING=1` makes the error name the kernel that caused it.
 - **Frequent SSH polling gets throttled** ("timed out during banner exchange"); poll every few minutes.

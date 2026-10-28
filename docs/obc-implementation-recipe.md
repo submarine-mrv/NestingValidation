@@ -231,7 +231,7 @@ interface, `cₜ` becomes meaningless, and the tangential advection term injects
 says the tangential term "is applied on the lateral boundaries only" and says nothing about a lateral
 boundary that terminates in land.
 
-Note the pattern: the bounds-preserving WENO problem recorded in `canary-domain-sizing.md` was also
+Note the pattern: the bounds-preserving WENO problem recorded in `../canary/domain-sizing.md` was also
 an immersed-boundary interaction, and that file's own source comment hedges on immersed-boundary
 safety. **New boundary/advection schemes in Oceananigans are worth testing against land before use.**
 
