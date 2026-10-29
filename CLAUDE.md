@@ -57,3 +57,24 @@ Everything else is internal and lives next to what it describes:
   unless the west boundary moves too.
 - `red_sea/README.md` — that domain’s verified geometry, the GLORYS depth checks (boundary *and*
   interior, the latter via `red_sea/glorys_interior_check.jl`), and what is untested.
+
+## Where this stands (2026-10-28)
+
+- **Red Sea** — the three-arm scheme comparison is done (`e4eafc5`); the recommended production
+  configuration is in `red_sea/README.md`. **Unmeasured:** the solution's sensitivity to the
+  `TracerReservoir` inflow length `L`. The test is two 2-day 0.05° arms at `L` = 20 km and 60 km
+  against the recorded `L` = 5 km arm. Background and the cross-domain spread:
+  `parent_excursion_survey.jl` and commit `fd77716`.
+- **Salish** — the tangential BC and oblique/reservoir scheme selection were added in `a50ac90`
+  but have **never been run**. The baseline is still the original validated 7-day run (its output
+  holds 56 snapshots ending at exactly 7.0 days). Worth doing: at 8.3× refinement Salish is the
+  decisive test of the hypothesis in `red_sea/README.md` that oblique radiation's failure tracks
+  refinement rather than land geometry — Canary failed at 4.2×, Red Sea survived at 1.7×.
+- **PR 676 (`nested_ocean_model`)** — `pr676_staging/redsea_nested.jl` is corrected but not yet
+  re-run. The first attempt was **invalid**: `Nz`/`scale` of 40/1800 against the baseline's 32/480
+  gave 4 levels in the top 150 m instead of 17, which halves the strait transport, because the
+  Hanish sill is 136 m. Separately, PR 676's defaults differ from the baseline on four axes —
+  inflow timescale 3days vs 6hours, outflow 360days vs `Inf`, reservoir `L` 20km vs 5km,
+  relaxation 1/6h vs 1/12h — so the schemes must be pinned explicitly to compare implementations
+  rather than configurations. They now are. What the invalid run did establish: a clean 2-day exit
+  and 25.7 s/iter against the baseline's 32.3, so the exchanger adds no meaningful overhead.
